@@ -1,0 +1,39 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Configuration & Secrets
+config.json
+*.secrets.json
+.env
+.lertz.env
+
+# Data & SQLite Databases
+data/
+data/*.db
+data/*.sqlite*
+data/*.log
+data/*.json
+data/jules_workspaces/
+kaggle/_runner.py
+
+# Virtual Environments
+venv/
+.venv/
+env/
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+bin/
+
+# Local Agent Workspace Directives
+.agents/

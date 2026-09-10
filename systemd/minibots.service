@@ -1,0 +1,29 @@
+[Unit]
+Description=Dystopi Minibots Logic Engine & Dynamic Plugin Orchestrator
+After=network.target minibots-conn.service
+Wants=minibots-conn.service
+
+[Service]
+Type=simple
+User=minibots
+Group=minibots
+WorkingDirectory=/opt/minibots
+ExecStart=/usr/bin/python3 /opt/minibots/main.py
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=3s
+TimeoutStopSec=5s
+UMask=0027
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=minibots
+
+# Security Hardening
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/minibots/data /opt/minibots
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

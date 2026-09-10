@@ -1,0 +1,46 @@
+{
+  "INTERNAL_SERVER": "127.0.0.1",
+  "ADMIN_NICKS": [
+    "admin*"
+  ],
+  "SERVERS": {
+    "local": {
+      "host": "127.0.0.1",
+      "port": 6667,
+      "nick": "minibot",
+      "channels": [
+        "#minibot",
+        "#dev"
+      ],
+      "ssl": false
+    },
+    "libera": {
+      "host": "irc.libera.chat",
+      "port": 6697,
+      "nick": "minibot",
+      "channels": [
+        "#minibot"
+      ],
+      "ssl": true,
+      "nickserv_password": "${MINIBOT_LIBERA_NICKSERV_PASSWORD}"
+    }
+  },
+  "PASTEBIN_URL": "${PASTEBIN_URL:-http://127.0.0.1:8000}",
+  "JULES": {
+    "API_KEY": "${JULES_API_KEY}",
+    "DEFAULT_REPO": "owner/repo"
+  },
+  "LLM": {
+    "GEMINI_API_KEY": "${GEMINI_API_KEY}",
+    "LOCAL_LLM_URL": "http://127.0.0.1:8080/v1",
+    "KAGGLE_GPU_URL": "${KAGGLE_GPU_URL}",
+    "MCP_SERVER_URL": "${MCP_SERVER_URL:-http://127.0.0.1:8050/sse}"
+  },
+  "MATRIX": {
+    "ENABLED": false,
+    "HOMESERVER_URL": "https://matrix.example.org",
+    "USER_ID": "@minibot:example.org",
+    "ACCESS_TOKEN": "${MINIBOT_MATRIX_ACCESS_TOKEN}"
+  },
+  "TROLL_NICKS": []
+}

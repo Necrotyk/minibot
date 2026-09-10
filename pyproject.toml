@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minibot"
+version = "1.0.0"
+description = "High-throughput, 2-tier dual-network ChatOps and threat intelligence bot framework"
+readme = "README.md"
+authors = [{ name = "Necrotyk" }]
+license = { text = "AGPL-3.0-or-later" }
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat :: Internet Relay Chat",
+    "Topic :: Security",
+]
+dependencies = [
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "fastmcp>=0.1.0",
+    "aiohttp>=3.9.0",
+    "pydantic>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Necrotyk/minibot"
+Repository = "https://github.com/Necrotyk/minibot"
+Issues = "https://github.com/Necrotyk/minibot/issues"
+
+[project.scripts]
+minibot = "main:main"
+
+[tool.setuptools]
+packages = ["minibots", "core", "plugins", "sideload", "adapters", "bridge", "mcp_tools", "jules"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

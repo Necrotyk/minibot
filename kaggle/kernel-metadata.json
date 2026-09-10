@@ -1,0 +1,14 @@
+{
+  "id": "dystopi/dystopi-minibot-worker",
+  "title": "Dystopi Minibot GPU Worker",
+  "code_file": "kaggle_worker_template.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "dataset_sources": ["dystopi/dystopi-llm-models"],
+  "competition_sources": [],
+  "kernel_sources": []
+}

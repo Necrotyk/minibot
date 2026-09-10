@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+version: "3.8"
+
+services:
+  minibot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: minibot
+    restart: unless-stopped
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./data:/app/data
+      - ./sideload:/app/sideload
+    environment:
+      - IRC_HOST=${IRC_HOST:-127.0.0.1}
+      - IRC_PORT=${IRC_PORT:-6667}
+      - IRC_NICK=${IRC_NICK:-minibot}
+      - IRC_CHANNELS=${IRC_CHANNELS:-#minibot}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - LOCAL_LLM_URL=${LOCAL_LLM_URL:-http://host.docker.internal:8080/v1}
+      - MCP_SERVER_URL=${MCP_SERVER_URL:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

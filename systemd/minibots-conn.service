@@ -1,0 +1,28 @@
+[Unit]
+Description=Dystopi Minibots IRC Connection Daemon & Multiplexer
+After=network.target inspircd.service
+Wants=inspircd.service
+
+[Service]
+Type=simple
+User=minibots
+Group=minibots
+WorkingDirectory=/opt/minibots
+ExecStart=/opt/minibots/bin/minibots-conn
+Restart=always
+RestartSec=3s
+TimeoutStopSec=5s
+UMask=0027
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=minibots-conn
+
+# Security Hardening
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/minibots/data /opt/minibots
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
