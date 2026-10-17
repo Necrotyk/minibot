@@ -79,7 +79,7 @@ start_bot() {
             return 1
         fi
         echo "[!] No config.json found. Running setup wizard first..."
-        "$SCRIPT_DIR/setup-lite.sh"
+        CALLED_FROM_MINIBOT=1 "$SCRIPT_DIR/setup-lite.sh"
     fi
 
     mkdir -p "$DATA_DIR"
@@ -295,7 +295,7 @@ disable_bot() {
 smart_mode() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
         echo "[*] No config.json found. Launching quickstart setup wizard..."
-        "$SCRIPT_DIR/setup-lite.sh"
+        CALLED_FROM_MINIBOT=1 "$SCRIPT_DIR/setup-lite.sh"
         start_bot "normal"
         if [[ -t 0 && "${CI:-false}" != "true" ]]; then
             read -r -p "Enable automatic reboot & crash recovery watchdog? [Y/n]: " ans

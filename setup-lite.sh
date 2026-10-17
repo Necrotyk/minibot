@@ -176,7 +176,7 @@ echo
 echo "Drop existing Sopel plugins into $SCRIPT_DIR/sideload/ for automatic hot-reloading."
 echo
 
-if [[ -t 0 && "${CI:-false}" != "true" ]]; then
+if [[ -t 0 && "${CI:-false}" != "true" && "${CALLED_FROM_MINIBOT:-0}" != "1" ]]; then
     read -r -p "Start the bot in the background and enable auto-restart on reboot now? [Y/n]: " START_NOW
     START_NOW="${START_NOW:-y}"
     if [[ "$START_NOW" =~ ^[Yy] ]]; then
