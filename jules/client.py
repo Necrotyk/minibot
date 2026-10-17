@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 client.py — Google Jules REST API Client (v1alpha) with Multi-Key Pool Rotation.
 """

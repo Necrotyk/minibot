@@ -1,4 +1,14 @@
 {
+  "PRIMARY_NETWORK": "local",
+  "ADMIN_NETWORKS": [
+    "local"
+  ],
+  "ADMIN_CHANNELS": [
+    "#minibot",
+    "#minibots",
+    "#dev"
+  ],
+  "AUTO_SPAWN_BOTS": [],
   "INTERNAL_SERVER": "127.0.0.1",
   "ADMIN_NICKS": [
     "admin*"
@@ -12,7 +22,9 @@
         "#minibot",
         "#dev"
       ],
-      "ssl": false
+      "ssl": false,
+      "trusted": true,
+      "tls_verify": false
     },
     "libera": {
       "host": "irc.libera.chat",
@@ -22,6 +34,8 @@
         "#minibot"
       ],
       "ssl": true,
+      "trusted": false,
+      "tls_verify": true,
       "nickserv_password": "${MINIBOT_LIBERA_NICKSERV_PASSWORD}"
     }
   },

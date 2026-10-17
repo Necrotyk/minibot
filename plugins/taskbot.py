@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 taskbot.py — Channel-Gated Coding & Technical Task Execution Plugin.
 Routes task instructions to Kaggle GPU coding models (Qwen Coder / Gemma) with WireGuard Pastebin offload.
@@ -20,7 +22,6 @@ TASK_ALLOWED_CHANNELS = [
     "#minibots",
     "#offtopic",
     "#research",
-    "#dystopi-offtopic",
 ]
 
 
@@ -84,7 +85,7 @@ class TaskBotPlugin:
         self._reply(network, target, f"⚙️ [TaskBot] Processing task for {sender} (role: coding, timeout: 120s)...")
 
         system_prompt = (
-            "You are an expert autonomous software engineer and system technician for Dystopi. "
+            "You are an expert autonomous software engineer and system technician for Minibots. "
             "Produce clean, efficient, self-contained code or technical instructions. "
             "Do not add conversational fluff or unprompted preambles. Output pure code or clear answers."
         )

@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 ircbot_shim.py — Zero-Dependency SingleServerIRCBot (jaraco/irc) Compatibility Shim.
 """

@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 kaggle_bot_binder.py — Bot-to-Role Binding, Context Encapsulation & IRC Safety Defanger.
 

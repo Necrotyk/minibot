@@ -12,7 +12,7 @@ Minibots is a modular, high-throughput ChatOps framework architected in two deco
 
 1. **Tier 1 (Connection Daemon):** A lightweight Go daemon (`cmd/conn-daemon/`) that maintains persistent TLS socket connections to IRC networks, Matrix bridges, or chat relays with automatic exponential backoff reconnects and connection multiplexing.
 2. **Tier 2 (Logic & Intelligence Daemon):** A Python 3 daemon (`minibots.py`, `core/`, `modules/`, `sideload/`) that handles command routing, AI inference pipelines (DAI), CTI threat intelligence feeds, plugin execution, and database persistence.
-3. **IPC Boundary:** Communications between the connection daemon and logic daemon flow over a local UNIX domain stream socket (`/tmp/minibots_ipc.sock`) using newline-delimited JSON framing (`{"type": "...", ...}`).
+3. **IPC Boundary:** Communications between the connection daemon and logic daemon flow over a local UNIX domain stream socket (`data/minibots_ipc.sock`, configurable via `MINIBOTS_IPC_SOCK`) using newline-delimited JSON framing (`{"type": "...", ...}`).
 
 ---
 

@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 trollbot.py — Context-Aware Persona Chatter with Sliding-Window History Buffer, Safety Defanging & Kaggle Attachment.
 """

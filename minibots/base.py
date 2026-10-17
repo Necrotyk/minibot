@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 base.py — MiniBot Base Class with Dynamic Module Management & Event Routing.
 """
@@ -282,6 +284,10 @@ class MiniBot:
                 lines.append("  •  ".join(chunk))
 
         return lines[:4]
+
+    def handle_privmsg(self, target: str, sender_nick: str, message: str, hostmask: str = "") -> None:
+        """Alias for on_privmsg for backwards compatibility."""
+        self.on_privmsg(target, sender_nick, message, hostmask)
 
     def on_privmsg(self, target: str, sender_nick: str, message: str, hostmask: str = "") -> None:
         """Dispatches incoming PRIVMSG to all active plugins and handles direct addressing."""

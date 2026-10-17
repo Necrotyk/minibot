@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 web_search.py — Web & Developer Search Module for Dystopi Minibots.
 Supports DuckDuckGo, Hacker News, GitHub, and Reddit queries.
@@ -143,7 +145,7 @@ def reddit_top_post(bot, trigger):
     url = f"https://www.reddit.com/r/{urllib.parse.quote(clean_sub)}/hot.json?limit=1"
     try:
         req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (compatible; MinibotsReddit/1.0; +https://dystopi.cc)"
+            "User-Agent": "Minibots/1.0 (+https://github.com/Necrotyk/minibot)"
         })
         with urllib.request.urlopen(req, timeout=5.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))

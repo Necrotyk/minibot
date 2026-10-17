@@ -8,6 +8,7 @@ Type=simple
 User=minibots
 Group=minibots
 WorkingDirectory=/opt/minibots
+Environment="MINIBOTS_IPC_SOCK=/opt/minibots/data/minibots_ipc.sock"
 ExecStart=/opt/minibots/bin/minibots-conn
 Restart=always
 RestartSec=3s

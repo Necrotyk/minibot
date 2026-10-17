@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 command_editor.py — Interactive Custom Command & Script Editor for Minibots.
 Supports text templates, sandboxed Python execution, multi-line buffer sessions, and Pastebin import.

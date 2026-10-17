@@ -3,10 +3,16 @@
 guard.py — SSRF Protection, DNS Pinning, Multi-Hop Redirect Validation & Token-Bucket Rate Limiters.
 """
 
+from __future__ import annotations
+
 import ipaddress
 import logging
 import os
+import re
+import shutil
 import socket
+import ssl
+import subprocess
 import time
 from typing import Dict, Optional, Tuple
 import urllib.error
@@ -166,19 +172,59 @@ class RotatingProxyErrorHandler(urllib.request.BaseHandler):
             return None
 
 
-def build_safe_opener(proxy_url: Optional[str] = None) -> urllib.request.OpenerDirector:
+def create_resilient_ssl_context(verify: bool = True) -> ssl.SSLContext:
+    """
+    Creates an SSLContext resilient to outdated system root certificates and legacy OpenSSL.
+    When verify=False:
+      - check_hostname is disabled and verify_mode is CERT_NONE
+      - Enables OP_LEGACY_SERVER_CONNECT if available
+      - Relaxes cipher suites to DEFAULT:@SECLEVEL=1 to permit legacy ciphers
+    """
+    try:
+        ctx = ssl.create_default_context()
+    except Exception:
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        except Exception:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS)
+
+    if not verify:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+    legacy_flag = getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
+    try:
+        ctx.options |= legacy_flag
+    except Exception:
+        pass
+
+    if not verify:
+        try:
+            ctx.set_ciphers("DEFAULT:@SECLEVEL=1")
+        except (ssl.SSLError, AttributeError):
+            try:
+                ctx.set_ciphers("HIGH:!aNULL:!kEDH")
+            except Exception:
+                pass
+
+    return ctx
+
+
+def build_safe_opener(proxy_url: Optional[str] = None, verify_ssl: bool = True) -> urllib.request.OpenerDirector:
     """
     Constructs a hardened urllib opener enforcing:
     1. Multi-hop SSRF redirect validation (SafeRedirectHandler).
-    2. Triangulated Egress Proxy mesh via 127.0.0.1:1088 for public internet traffic,
+    2. Resilient HTTPSHandler with custom SSLContext.
+    3. Triangulated Egress Proxy mesh via 127.0.0.1:1088 for public internet traffic,
        with zero-leak bypass for internal cluster subnets (SafeProxyHandler).
-    3. Automatic rate-limit and WAF mitigation with single-hop residential rotation
+    4. Automatic rate-limit and WAF mitigation with single-hop residential rotation
        on HTTP 429/403 (RotatingProxyErrorHandler).
     """
     if proxy_url is None:
         proxy_url = os.environ.get("MINIBOTS_EGRESS_PROXY", "http://127.0.0.1:1088")
 
-    handlers = [SafeRedirectHandler()]
+    ssl_ctx = create_resilient_ssl_context(verify=verify_ssl)
+    handlers = [SafeRedirectHandler(), urllib.request.HTTPSHandler(context=ssl_ctx)]
     if proxy_url and proxy_url.lower() not in ("none", "direct", "0", "false", ""):
         handlers.append(SafeProxyHandler(proxy_url=proxy_url))
         handlers.append(RotatingProxyErrorHandler())
@@ -186,9 +232,99 @@ def build_safe_opener(proxy_url: Optional[str] = None) -> urllib.request.OpenerD
     return urllib.request.build_opener(*handlers)
 
 
-def safe_urlopen(url_or_req, timeout=None):
+def fetch_url_resilient(
+    url: str,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: float = 4.0,
+    max_bytes: int = 65536
+) -> Tuple[Optional[bytes], Dict[str, str]]:
+    """
+    Executes a 3-tier resilient URL fetch with SSRF pre-check:
+    Attempt 1: Standard verified HTTPS opener.
+    Attempt 2 (Unverified TLS Fallback): If Attempt 1 raises an SSL certificate or handshake error,
+              automatically retry with relaxed, unverified SSL context.
+    Attempt 3 (curl CLI Fallback): If Python libssl lacks TLS 1.2/1.3 ciphers, fall back to curl subprocess.
+    Returns (body_bytes, response_headers_dict).
+    """
+    if url.startswith("www."):
+        url = "https://" + url
+
+    safe, resolved_ip = is_safe_url(url)
+    if not safe or not resolved_ip:
+        logger.warning(f"[RESILIENT FETCH] Blocked unsafe/restricted URL: {url}")
+        return None, {}
+
+    default_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 MinibotURL/1.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/*,*/*;q=0.8",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    if headers:
+        default_headers.update(headers)
+
+    # Attempt 1: Standard verified fetch
+    try:
+        req = urllib.request.Request(url, headers=default_headers)
+        opener = build_safe_opener(verify_ssl=True)
+        with opener.open(req, timeout=timeout) as resp:
+            chunk = resp.read(max_bytes)
+            resp_headers = {k.lower(): v for k, v in resp.headers.items()}
+            return chunk, resp_headers
+    except (ssl.SSLError, ssl.CertificateError, urllib.error.URLError) as e:
+        err_str = str(e).lower()
+        is_ssl_err = isinstance(e, ssl.SSLError) or "cert" in err_str or "ssl" in err_str or "handshake" in err_str
+        if not is_ssl_err:
+            logger.debug(f"[RESILIENT FETCH] Attempt 1 non-SSL network failure: {e}")
+            return None, {}
+        logger.info(f"[RESILIENT FETCH] Attempt 1 failed with SSL error ({e}). Retrying with unverified TLS context...")
+    except Exception as e:
+        logger.debug(f"[RESILIENT FETCH] Attempt 1 failed: {e}")
+        return None, {}
+
+    # Attempt 2: Unverified TLS context with relaxed ciphers
+    try:
+        req = urllib.request.Request(url, headers=default_headers)
+        opener = build_safe_opener(verify_ssl=False)
+        with opener.open(req, timeout=timeout) as resp:
+            chunk = resp.read(max_bytes)
+            resp_headers = {k.lower(): v for k, v in resp.headers.items()}
+            return chunk, resp_headers
+    except Exception as e:
+        logger.debug(f"[RESILIENT FETCH] Attempt 2 (unverified SSL) failed: {e}")
+
+    # Attempt 3: Subprocess curl CLI fallback
+    if shutil.which("curl"):
+        try:
+            logger.info(f"[RESILIENT FETCH] Python libssl failed for {url}. Attempting curl subprocess fallback...")
+            cmd = [
+                "curl", "-sSLk", "-i",
+                "--max-time", str(int(max(1.0, timeout))),
+                "--max-filesize", str(max_bytes * 4),
+                "-A", default_headers.get("User-Agent", "Mozilla/5.0"),
+                url
+            ]
+            res = subprocess.run(cmd, capture_output=True, timeout=timeout + 2.0)
+            if res.returncode == 0 and res.stdout:
+                raw = res.stdout
+                parts = re.split(b'\r?\n\r?\n', raw)
+                body = parts[-1] if len(parts) > 1 else raw
+                last_header_block = parts[-2].decode("latin-1", errors="ignore") if len(parts) > 1 else ""
+                h_dict: Dict[str, str] = {}
+                for line in last_header_block.splitlines():
+                    if ":" in line:
+                        hk, hv = line.split(":", 1)
+                        h_dict[hk.strip().lower()] = hv.strip()
+                return body[:max_bytes], h_dict
+        except Exception as e:
+            logger.debug(f"[RESILIENT FETCH] Attempt 3 (curl) failed: {e}")
+
+    return None, {}
+
+
+def safe_urlopen(url_or_req, timeout=None, verify_ssl=True):
     """Executes an HTTP request using the hardened safe opener."""
-    opener = build_safe_opener()
+    opener = build_safe_opener(verify_ssl=verify_ssl)
     return opener.open(url_or_req, timeout=timeout)
 
 

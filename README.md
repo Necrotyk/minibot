@@ -40,7 +40,7 @@ Minibots enforces clean layer separation between network I/O and bot logic:
 │  Tier 1: Connection Daemon (minibots-conn / conn_daemon.py)           │
 │  - Persistent socket pool & reconnect state machine                   │
 │  - Token-bucket rate limiters per network                             │
-│  - UNIX domain socket IPC server (/opt/minibots/data/minibots_ipc.sock)│
+│  - UNIX domain socket IPC server (data/minibots_ipc.sock)             │
 └──────────────────────────────────────┬─────────────────────────────────┘
                                        │ Framed JSON-RPC (0660 / SO_PEERCRED)
                                        ▼
@@ -51,7 +51,7 @@ Minibots enforces clean layer separation between network I/O and bot logic:
 │  - Sideload Engine: AST verification & live plugin watcher             │
 │  - Multi-Provider LLM Router (Local Llama, Gemini, Kaggle GPU)        │
 │  - Dynamic ToolHub & ToolCrafter                                       │
-│  - Partitioned SQLite WAL Storage (/opt/minibots/data/*.db)            │
+│  - Partitioned SQLite WAL Storage (data/*.db)                         │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -146,6 +146,25 @@ cp config.example.json config.json
 chmod 600 config.json
 ```
 
+### Option D: Minibot Lite & Turnkey Set-and-Forget (Zero Dependencies)
+
+If running on low-resource hardware (Core 2 Duo, Raspberry Pi), custom Linux distros without `systemd`/Docker/compilers, or migrating from a broken Sopel installation:
+
+```bash
+git clone https://github.com/Necrotyk/minibot.git
+cd minibot
+
+# 30-Second Set-and-Forget setup (detects Sopel, configures, and starts daemon):
+./minibot.sh
+
+# Manage bot lifecycle:
+./minibot.sh status     # Check live PID and view recent logs
+./minibot.sh logs       # Stream live rotating logs (data/minibot.log)
+./minibot.sh restart    # Graceful restart
+./minibot.sh enable     # Install crontab/systemd auto-reboot & crash watchdog
+```
+See [README-LITE.md](README-LITE.md) for full documentation, Sopel plugin compatibility, and zero-SSH in-chat admin commands (`!join`, `!part`, `!reload`, `!botstatus`).
+
 ---
 
 ### Configuration Reference (`config.json`)
@@ -154,6 +173,16 @@ Minibots supports `${VARIABLE}` expansion for secrets. Configure your networks, 
 
 ```json
 {
+  "PRIMARY_NETWORK": "local",
+  "ADMIN_NETWORKS": [
+    "local"
+  ],
+  "ADMIN_CHANNELS": [
+    "#minibot",
+    "#minibots",
+    "#dev"
+  ],
+  "AUTO_SPAWN_BOTS": [],
   "INTERNAL_SERVER": "127.0.0.1",
   "ADMIN_NICKS": [
     "admin*"
@@ -167,7 +196,9 @@ Minibots supports `${VARIABLE}` expansion for secrets. Configure your networks, 
         "#minibot",
         "#dev"
       ],
-      "ssl": false
+      "ssl": false,
+      "trusted": true,
+      "tls_verify": false
     },
     "libera": {
       "host": "irc.libera.chat",
@@ -177,6 +208,8 @@ Minibots supports `${VARIABLE}` expansion for secrets. Configure your networks, 
         "#minibot"
       ],
       "ssl": true,
+      "trusted": false,
+      "tls_verify": true,
       "nickserv_password": "${MINIBOT_LIBERA_NICKSERV_PASSWORD}"
     }
   },
@@ -212,8 +245,11 @@ Minibots supports `${VARIABLE}` expansion for secrets. Configure your networks, 
 For quick testing, debugging, or running a single bot directly in a terminal or tmux session without installing systemd services:
 
 ```bash
-# Syntax: python3 run_bot.py <nick> <network> <#channel> [module1,module2,...]
-python3 run_bot.py mybot localnet #lobby sideload_infobot,sideload_web_search
+# Flags syntax (recommended):
+python3 run_bot.py --nick mybot --network local --channel '#minibot' --modules sideload_infobot,sideload_web_search
+
+# Positional syntax:
+python3 run_bot.py mybot local '#minibot' sideload_infobot,sideload_web_search
 ```
 
 ### Mode B: Two-Tier Development Mode

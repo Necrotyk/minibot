@@ -15,6 +15,10 @@ import (
 
 // Config encapsulates runtime parameters for Minibots connection and logic components.
 type Config struct {
+	PrimaryNetwork string                      `json:"PRIMARY_NETWORK,omitempty"`
+	AdminNetworks  []string                    `json:"ADMIN_NETWORKS,omitempty"`
+	AdminChannels  []string                    `json:"ADMIN_CHANNELS,omitempty"`
+	AutoSpawnBots  []any                       `json:"AUTO_SPAWN_BOTS,omitempty"`
 	InternalServer string                      `json:"INTERNAL_SERVER"`
 	AdminNicks     []string                    `json:"ADMIN_NICKS"`
 	Servers        map[string]irc.ServerConfig `json:"SERVERS"`

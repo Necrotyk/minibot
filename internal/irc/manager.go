@@ -18,6 +18,8 @@ type ServerConfig struct {
 	Nick             string   `json:"nick"`
 	Channels         []string `json:"channels"`
 	SSL              bool     `json:"ssl"`
+	Trusted          bool     `json:"trusted,omitempty"`
+	TLSVerify        *bool    `json:"tls_verify,omitempty"`
 	NickServPassword string   `json:"nickserv_password,omitempty"`
 }
 

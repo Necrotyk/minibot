@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 tool_craft.py — Autonomous Tool & Plugin Synthesizer for Dystopi Minibots.
 Leverages LLMRouter to generate, validate, and hot-load Python bot tools on the fly.

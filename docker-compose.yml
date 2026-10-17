@@ -20,5 +20,6 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - LOCAL_LLM_URL=${LOCAL_LLM_URL:-http://host.docker.internal:8080/v1}
       - MCP_SERVER_URL=${MCP_SERVER_URL:-}
+      - MINIBOTS_IPC_SOCK=/app/data/minibots_ipc.sock
     extra_hosts:
       - "host.docker.internal:host-gateway"

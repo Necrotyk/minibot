@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 ai_assistant.py — AI Assistance, Summarization & Explanation Module for Dystopi Minibots.
 Routes generation queries to the local or remote LLMRouter.

@@ -16,7 +16,7 @@ import (
 
 func main() {
 	configPathFlag := flag.String("config", "", "Path to config.json (defaults to $MINIBOTS_CONFIG or /opt/minibots/config.json)")
-	ipcSocketFlag := flag.String("ipc-sock", "", "Path to UNIX IPC socket (defaults to $MINIBOTS_IPC_SOCK or /opt/minibots/minibots_ipc.sock)")
+	ipcSocketFlag := flag.String("ipc-sock", "", "Path to UNIX IPC socket (defaults to $MINIBOTS_IPC_SOCK or data/minibots_ipc.sock)")
 	verboseFlag := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
 
@@ -24,7 +24,7 @@ func main() {
 		log.Println("[Minibots-Conn] Verbose logging enabled")
 	}
 
-	log.Println("[Minibots-Conn] Starting Dystopi Minibots Go Connection Daemon & Multiplexer...")
+	log.Println("[Minibots-Conn] Starting Minibots Go Connection Daemon & Multiplexer...")
 
 	// 1. Resolve IPC socket path
 	socketPath := *ipcSocketFlag
@@ -32,7 +32,7 @@ func main() {
 		socketPath = os.Getenv("MINIBOTS_IPC_SOCK")
 	}
 	if socketPath == "" {
-		socketPath = "/opt/minibots/minibots_ipc.sock"
+		socketPath = "data/minibots_ipc.sock"
 	}
 
 	// 2. Load Configuration

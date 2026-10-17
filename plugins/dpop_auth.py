@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 dpop_auth.py — Ephemeral DPoP Sanctuary Knock & Authentication Plugin for Minibots.
 Dispatches user-tier knock passes into public/private IRC channels via PM.
@@ -32,7 +34,7 @@ class DPoPAuthPlugin:
     """
     def __init__(self, minibot: Any, config: Optional[Dict[str, Any]] = None):
         self.bot = minibot
-        self.config = config or {}
+        self.config = config if config is not None else (getattr(minibot, "config", {}) or {})
         self.lock = threading.RLock()
 
         # State tracking
@@ -47,13 +49,21 @@ class DPoPAuthPlugin:
         self.nickserv_cache: Dict[str, Tuple[int, float]] = {}  # nick.lower() -> (status_code, timestamp)
         self.nickserv_waiters: Dict[str, threading.Event] = {}  # nick.lower() -> Event
 
-        self.utils_url = self.config.get("UTILS_URL", DEFAULT_UTILS_URL).rstrip("/")
+        dpop_cfg = self.config.get("DPOP_AUTH", {}) if isinstance(self.config.get("DPOP_AUTH"), dict) else {}
+        self.utils_url = (
+            dpop_cfg.get("BASE_URL")
+            or self.config.get("UTILS_URL")
+            or os.environ.get("DPOP_AUTH_URL")
+            or DEFAULT_UTILS_URL
+        ).rstrip("/")
 
     def _get_api_auth_key(self) -> str:
-        """Retrieves internal authorization key for dystopi-utils API."""
+        """Retrieves internal authorization key for DPoP auth API."""
         key = (
-            keystore.get_secret("LERTZ_SECRET_KEY")
+            keystore.get_secret("DPOP_AUTH_KEY")
+            or keystore.get_secret("LERTZ_SECRET_KEY")
             or keystore.get_secret("SECRET_KEY")
+            or os.environ.get("DPOP_AUTH_KEY")
             or os.environ.get("LERTZ_SECRET_KEY")
             or os.environ.get("SECRET_KEY")
             or os.environ.get("LERTZ_KEY")
@@ -88,6 +98,7 @@ class DPoPAuthPlugin:
             "User-Agent": "Minibots-DPoP-Auth/1.0",
         }
         if auth_key:
+            headers["X-DPoP-Auth-Key"] = auth_key
             headers["X-Lertz-Key"] = auth_key
             headers["Authorization"] = f"Bearer {auth_key}"
 
@@ -256,17 +267,18 @@ class DPoPAuthPlugin:
             return
 
         token = res_data.get("master_token", "")
-        knock_url = res_data.get("full_knock_url") or f"https://util.dystopi.cc/k/{token}"
+        knock_url = res_data.get("full_knock_url") or f"{self.utils_url}/k/{token}"
+        parsed_target = urllib.parse.urlparse(self.utils_url).netloc or self.utils_url
 
         if is_cli:
             self.bot.send_msg(nick, f"[DPoP] === HEADLESS CLI SANCTUARY PASS ===")
-            self.bot.send_msg(nick, f"[DPoP] Target: util.dystopi.cc | Role: USER | Session: 30 Days")
+            self.bot.send_msg(nick, f"[DPoP] Target: {parsed_target} | Role: USER | Session: 30 Days")
             self.bot.send_msg(nick, f"[DPoP] Execute this claim command in your terminal within 24 hours:")
-            self.bot.send_msg(nick, f"curl -sS -X POST \"https://util.dystopi.cc/api/k/{token}/claim-cli\"")
+            self.bot.send_msg(nick, f"curl -sS -X POST \"{self.utils_url}/api/k/{token}/claim-cli\"")
             self.bot.send_msg(nick, f"[DPoP] This command will issue your 30-day bearer CLI token (lz_cli_...) and export aliases.")
         else:
             self.bot.send_msg(nick, f"[DPoP] === ZERO-TRUST SANCTUARY PASS ===")
-            self.bot.send_msg(nick, f"[DPoP] Target: util.dystopi.cc | Role: USER | Session: 30 Days")
+            self.bot.send_msg(nick, f"[DPoP] Target: {parsed_target} | Role: USER | Session: 30 Days")
             self.bot.send_msg(nick, f"[DPoP] One-Time Knock URL (Unclaimed link expires in 24h):")
             self.bot.send_msg(nick, f"{knock_url}")
             self.bot.send_msg(nick, f"[DPoP] Open in your browser to establish hardware-bound WebCrypto ECDSA P-256 session.")
@@ -492,13 +504,14 @@ class DPoPAuthPlugin:
         items = data.get("items", [])
         count = data.get("count", len(items))
 
+        parsed_target = urllib.parse.urlparse(self.utils_url).netloc or self.utils_url
         if not is_dm:
-            self.bot.send_msg(reply_dest, f"[DPoP] {sender_nick}: You have {count} items in your vault. Detailed listing dispatched to PM. Web Vault: https://util.dystopi.cc/my-files")
+            self.bot.send_msg(reply_dest, f"[DPoP] {sender_nick}: You have {count} items in your vault. Detailed listing dispatched to PM. Web Vault: {self.utils_url}/my-files")
 
         self.bot.send_msg(sender_nick, f"[DPoP] === YOUR VAULT ITEMS ({count} total) ===")
-        self.bot.send_msg(sender_nick, f"[DPoP] CRT Web Vault: https://util.dystopi.cc/my-files")
+        self.bot.send_msg(sender_nick, f"[DPoP] CRT Web Vault: {self.utils_url}/my-files")
         if not items:
-            self.bot.send_msg(sender_nick, f"[DPoP] No items found. Upload files or create pastes at util.dystopi.cc.")
+            self.bot.send_msg(sender_nick, f"[DPoP] No items found. Upload files or create pastes at {parsed_target}.")
             return
 
         for it in items[:5]:
@@ -511,7 +524,7 @@ class DPoPAuthPlugin:
             self.bot.send_msg(sender_nick, f"  #{item_id} [{itype}] {name} | Expiry: {exp} | Active Links: {active_links}")
 
         if len(items) > 5:
-            self.bot.send_msg(sender_nick, f"  ... and {len(items) - 5} more items. View all at https://util.dystopi.cc/my-files")
+            self.bot.send_msg(sender_nick, f"  ... and {len(items) - 5} more items. View all at {self.utils_url}/my-files")
         self.bot.send_msg(sender_nick, f"[DPoP] Use '!share <item_id> [ttl_hours] [single|multi]' to issue knock links.")
 
     def _handle_share_command(self, reply_dest: str, sender_nick: str, hostmask: str, args: List[str], is_dm: bool = False) -> None:
@@ -567,7 +580,7 @@ class DPoPAuthPlugin:
             self.bot.send_msg(reply_dest if not is_dm else sender_nick, f"[DPoP] Failed to create share link: {err}")
             return
 
-        full_url = res.get("full_knock_url") or f"https://util.dystopi.cc{res['knock_url']}"
+        full_url = res.get("full_knock_url") or f"{self.utils_url}{res['knock_url']}"
         quota_str = "Unlimited" if max_claims == -1 else f"{max_claims} Claim"
 
         if not is_dm:

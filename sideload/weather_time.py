@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 weather_time.py — Live Weather & World Clock Module for Dystopi Minibots.
 Supports wttr.in weather forecasts and UTC/timezone lookups.

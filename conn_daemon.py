@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 conn_daemon.py — Multi-Network TCP/SSL Socket Broker & Zero-Disconnect Multiplexer.
 Manages raw IRC connections for primary bots and all spawned minibots with zero socket drops on logic reloads.
@@ -29,7 +31,7 @@ from core.logger import setup_logger
 
 logger = setup_logger("ConnDaemon", logging.INFO)
 
-SOCKET_IPC_PATH = os.environ.get("MINIBOTS_IPC_SOCK", "/opt/minibots/minibots_ipc.sock")
+SOCKET_IPC_PATH = os.environ.get("MINIBOTS_IPC_SOCK", str(BASE_DIR / "data" / "minibots_ipc.sock"))
 
 
 class IRCSocketConnection:
@@ -45,7 +47,9 @@ class IRCSocketConnection:
         nickserv_password: Optional[str] = None,
         on_line_received: Optional[Any] = None,
         on_nick_updated: Optional[Any] = None,
-        rate_limiter: Optional[TokenBucket] = None
+        rate_limiter: Optional[TokenBucket] = None,
+        trusted: bool = False,
+        tls_verify: bool = True
     ):
         self.network = network_name
         self.host = host
@@ -58,6 +62,8 @@ class IRCSocketConnection:
         self.on_line_received = on_line_received
         self.on_nick_updated = on_nick_updated
         self.rate_limiter = rate_limiter or TokenBucket(capacity=4.0, refill_rate=0.5)
+        self.trusted = trusted
+        self.tls_verify = tls_verify
 
         self.reader: Optional[asyncio.StreamReader] = None
         self.writer: Optional[asyncio.StreamWriter] = None
@@ -74,7 +80,7 @@ class IRCSocketConnection:
             try:
                 logger.info(f"[{self.network}:{self.current_nick}] Connecting to {self.host}:{self.port} (SSL: {self.use_ssl})...")
                 ssl_ctx = ssl.create_default_context() if self.use_ssl else None
-                if ssl_ctx and not self.network.startswith("wireguard"):
+                if ssl_ctx and not self.tls_verify:
                     ssl_ctx.check_hostname = False
                     ssl_ctx.verify_mode = ssl.CERT_NONE
 
@@ -87,7 +93,7 @@ class IRCSocketConnection:
 
                 # Start registration
                 await self.send_raw(f"NICK {self.current_nick}")
-                await self.send_raw(f"USER {self.current_nick} 0 * :Dystopi Minibots Daemon")
+                await self.send_raw(f"USER {self.current_nick} 0 * :Minibots Daemon")
 
                 self._tasks = [
                     asyncio.create_task(self._recv_loop()),
@@ -112,14 +118,14 @@ class IRCSocketConnection:
             if not self.writer or self.writer.is_closing():
                 break
 
-            # Rate limiting for public networks
-            if not self.network.startswith("wireguard"):
+            # Rate limiting for non-trusted networks
+            if not self.trusted:
                 wait = self.rate_limiter.wait_time(1.0)
                 if wait > 0:
                     await asyncio.sleep(wait)
                 self.rate_limiter.consume(1.0)
             else:
-                # Fast burst on WireGuard
+                # Fast burst on trusted networks
                 await asyncio.sleep(0.01)
 
             try:
@@ -239,7 +245,9 @@ class ConnectionBroker:
         # 2. Spin up default IRC socket connections
         servers = self.config.servers
         for net_name, srv in servers.items():
-            rate_limiter = TokenBucket(capacity=4.0, refill_rate=0.5) if not net_name.startswith("wireguard") else TokenBucket(capacity=20.0, refill_rate=10.0)
+            is_trusted = srv.get("trusted", False) or net_name.startswith("wireguard") or net_name.startswith("local")
+            tls_verify = srv.get("tls_verify", True)
+            rate_limiter = TokenBucket(capacity=20.0, refill_rate=10.0) if is_trusted else TokenBucket(capacity=4.0, refill_rate=0.5)
             conn = IRCSocketConnection(
                 network_name=net_name,
                 host=srv.get("host", "127.0.0.1"),
@@ -250,7 +258,9 @@ class ConnectionBroker:
                 nickserv_password=srv.get("nickserv_password"),
                 on_line_received=self._broadcast_to_ipc,
                 on_nick_updated=self._broadcast_nick_update,
-                rate_limiter=rate_limiter
+                rate_limiter=rate_limiter,
+                trusted=is_trusted,
+                tls_verify=tls_verify
             )
             key = f"{net_name}:{srv.get('nick', 'minibots').lower()}"
             self.connections[key] = conn
@@ -282,7 +292,8 @@ class ConnectionBroker:
     async def _process_ipc_payload(self, payload: Dict[str, Any]) -> None:
         """Processes outgoing instructions from logic daemon."""
         msg_type = payload.get("type")
-        network = payload.get("network", "wireguard")
+        default_net = getattr(self.config, "primary_network", "local")
+        network = payload.get("network", default_net)
         target_nick = payload.get("nick", "")
 
         if msg_type == "raw":
@@ -303,7 +314,9 @@ class ConnectionBroker:
             key = f"{network}:{bot_nick.lower()}"
             if key not in self.connections:
                 srv = self.config.servers.get(network, {})
-                rate_limiter = TokenBucket(capacity=4.0, refill_rate=0.5) if not network.startswith("wireguard") else TokenBucket(capacity=20.0, refill_rate=10.0)
+                is_trusted = srv.get("trusted", False) or network.startswith("wireguard") or network.startswith("local")
+                tls_verify = srv.get("tls_verify", True)
+                rate_limiter = TokenBucket(capacity=20.0, refill_rate=10.0) if is_trusted else TokenBucket(capacity=4.0, refill_rate=0.5)
                 conn = IRCSocketConnection(
                     network_name=network,
                     host=srv.get("host", "127.0.0.1"),
@@ -314,7 +327,9 @@ class ConnectionBroker:
                     nickserv_password=srv.get("nickserv_password"),
                     on_line_received=self._broadcast_to_ipc,
                     on_nick_updated=self._broadcast_nick_update,
-                    rate_limiter=rate_limiter
+                    rate_limiter=rate_limiter,
+                    trusted=is_trusted,
+                    tls_verify=tls_verify
                 )
                 self.connections[key] = conn
                 logger.info(f"Spawning discrete socket connection for {key} in {channels}")

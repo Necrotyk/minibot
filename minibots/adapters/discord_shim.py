@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 discord_shim.py — Zero-Dependency Discord.py Command Compatibility Shim for Minibots.
 """

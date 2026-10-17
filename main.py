@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 main.py — Minibots Logic Daemon, Command Dispatcher & Hot-Reloader.
-Connects to conn_daemon over UNIX domain IPC socket (/opt/minibots/minibots_ipc.sock).
+Connects to conn_daemon over UNIX domain IPC socket (data/minibots_ipc.sock).
 """
 
 import asyncio
@@ -40,7 +42,7 @@ from plugins.dpop_auth import DPoPAuthPlugin
 logger = setup_logger("MinibotsMain", logging.INFO)
 
 
-SOCKET_IPC_PATH = os.environ.get("MINIBOTS_IPC_SOCK", "/opt/minibots/minibots_ipc.sock")
+SOCKET_IPC_PATH = os.environ.get("MINIBOTS_IPC_SOCK", str(BASE_DIR / "data" / "minibots_ipc.sock"))
 
 
 def _safe_create_task(coro):
@@ -83,7 +85,7 @@ class MinibotsLogicDaemon:
         self.dispatcher = CommandDispatcher(admin_nicks=config.admin_nicks)
         self.kaggle_mgr = KaggleKernelManager(
             config=config.data,
-            broadcast_callback=lambda msg: self.send_privmsg("wireguard", "#minibots", msg)
+            broadcast_callback=lambda msg: self.send_privmsg(self.primary_network, self.admin_channels[0] if self.admin_channels else "#minibots", msg)
         )
         self.manager = MinibotManager(
             config=config.data,
@@ -103,8 +105,8 @@ class MinibotsLogicDaemon:
             def __init__(self, daemon):
                 self.daemon = daemon
                 self.nick = "minibots"
-                self.network = "wireguard"
-                self.raw_send_callback = lambda nick, line: self.daemon._send_raw_to_ipc(nick, line, network="wireguard")
+                self.network = daemon.primary_network
+                self.raw_send_callback = lambda nick, line: self.daemon._send_raw_to_ipc(nick, line, network=self.network)
             def send_msg(self, target: str, message: str) -> None:
                 self.daemon.send_privmsg(self.network, target, message)
 
@@ -117,8 +119,30 @@ class MinibotsLogicDaemon:
 
         self._register_commands()
 
-    def _send_raw_to_ipc(self, bot_nick: str, raw_line: str, network: str = "wireguard") -> None:
+    @property
+    def primary_network(self) -> str:
+        if hasattr(self.config, "primary_network") and isinstance(self.config.primary_network, str):
+            return self.config.primary_network
+        return "local"
+
+    @property
+    def admin_channels(self) -> List[str]:
+        if hasattr(self.config, "admin_channels") and isinstance(self.config.admin_channels, list):
+            return self.config.admin_channels
+        return ["#minibot", "#minibots", "#dev"]
+
+    def is_trusted_network(self, network: str) -> bool:
+        if hasattr(self.config, "is_trusted_network") and callable(self.config.is_trusted_network):
+            res = self.config.is_trusted_network(network)
+            if isinstance(res, bool):
+                return res
+        net = (network or "").lower().strip()
+        return net.startswith("local") or net.startswith("wireguard") or net == "wg"
+
+    def _send_raw_to_ipc(self, bot_nick: str, raw_line: str, network: Optional[str] = None) -> None:
         """Transmits raw IRC line to conn_daemon over IPC."""
+        if network is None:
+            network = self.primary_network
         if self.ipc_writer and not self.ipc_writer.is_closing():
             payload = json.dumps({"type": "raw", "network": network, "nick": bot_nick, "line": raw_line}) + "\n"
             try:
@@ -192,8 +216,8 @@ class MinibotsLogicDaemon:
         self.dispatcher.register("part", self._cmd_part, min_ring=0, help_text="Part channel: part [bot_nick] <#chan>", category="admin")
         self.dispatcher.register("say", self._cmd_say, min_ring=0, help_text="Say message: say <target> <msg>", category="admin")
         self.dispatcher.register("raw", self._cmd_raw, min_ring=0, help_text="Send raw IRC line: raw <line>", category="admin")
-        self.dispatcher.register("ignore", self._cmd_ignore, min_ring=0, help_text="Dynamic URL ignore filter: ignore <add|del|list> [nick]", category="admin", aliases=["ignorebot", "urlignore"])
-        self.dispatcher.register("dpop", self._cmd_dpop, min_ring=0, help_text="DPoP sanctuary pass control: list | approve | deny | mode | revoke", category="admin", aliases=["authadmin"])
+        if self.config.data.get("DPOP_AUTH", {}).get("ENABLED", False):
+            self.dispatcher.register("dpop", self._cmd_dpop, min_ring=0, help_text="DPoP sanctuary pass control: list | approve | deny | mode | revoke", category="admin", aliases=["authadmin"])
         self.dispatcher.register("server", self._cmd_server, min_ring=0, help_text="Dynamic IRC server registration: server add <net> <host[:port]> [ssl] | server list", category="admin", aliases=["srv"])
 
         # Umbrella aliases
@@ -219,13 +243,16 @@ class MinibotsLogicDaemon:
                 if rehydrated:
                     logger.info(f"Rehydrated {len(rehydrated)} minibots from database: {', '.join(rehydrated)}")
 
-                # Ensure default julesbot in #jules
-                if "julesbot" not in self.manager.active_bots:
-                    self.manager.spawn_bot("julesbot", "wireguard", ["#jules"], ["julesbot"], creator_nick="admin")
-
-                # Ensure default gr_dystopi CTI analyst in #lertz-dystopi and #lertz
-                if "gr_dystopi" not in self.manager.active_bots:
-                    self.manager.spawn_bot("gr_dystopi", "wireguard", ["#lertz-dystopi", "#lertz"], ["sideload_lertz_threat_intel"], creator_nick="admin")
+                # Declaratively auto-spawn configured bots
+                for auto_bot in self.config.data.get("AUTO_SPAWN_BOTS", []):
+                    if isinstance(auto_bot, dict):
+                        b_nick = auto_bot.get("nick")
+                        b_net = auto_bot.get("network", self.primary_network)
+                        b_chans = auto_bot.get("channels", self.admin_channels)
+                        b_mods = auto_bot.get("modules", [])
+                        b_creator = auto_bot.get("creator_nick", "admin")
+                        if b_nick and b_nick not in self.manager.active_bots:
+                            self.manager.spawn_bot(b_nick, b_net, b_chans, b_mods, creator_nick=b_creator)
 
                 self.manager.sideload_engine.start_watcher(interval=2.0)
                 asyncio.create_task(self._broadcast_startup_changelog())
@@ -252,13 +279,13 @@ class MinibotsLogicDaemon:
                         msg_type = payload.get("type")
                         if msg_type == "irc_line":
                             self._handle_irc_event(
-                                payload.get("network", "wireguard"),
+                                payload.get("network", self.primary_network),
                                 payload.get("bot_nick", "minibots"),
                                 payload.get("line", "")
                             )
                         elif msg_type == "nick_update":
                             self.manager.update_bot_nick(
-                                payload.get("network", "wireguard"),
+                                payload.get("network", self.primary_network),
                                 payload.get("old_nick", ""),
                                 payload.get("new_nick", "")
                             )
@@ -298,7 +325,7 @@ class MinibotsLogicDaemon:
             prefix_clean = prefix.lstrip(":")
             sender_nick = prefix_clean.split("!")[0]
             hostmask = prefix_clean.split("!", 1)[1] if "!" in prefix_clean else ""
-            is_wireguard = network.startswith("wireguard")
+            is_trusted_net = self.is_trusted_network(network)
 
             # 1. Check multi-line command editing session
             sess = self.command_editor.get_session(sender_nick)
@@ -331,8 +358,8 @@ class MinibotsLogicDaemon:
                         self.send_privmsg(network, target, f"[{cmd_name.upper()}] Admin commands cannot be used in public channels.")
                         activity_buffer.record(network, target, sender_nick, f"!{cmd_name} {' '.join(args)}", "DENIED_PUBLIC_CHANNEL")
                         return
-                    if not is_wireguard:
-                        self.send_privmsg(network, target, f"[{cmd_name.upper()}] Ring 0 commands restricted to WireGuard network.")
+                    if not is_trusted_net:
+                        self.send_privmsg(network, target, f"[{cmd_name.upper()}] Ring 0 commands restricted to trusted admin networks.")
                         activity_buffer.record(network, target, sender_nick, f"!{cmd_name} {' '.join(args)}", "DENIED_NETWORK")
                         return
                     if not is_admin:
@@ -349,7 +376,9 @@ class MinibotsLogicDaemon:
             logger.error(f"Failed to parse IRC line: {raw_line} ({e})")
 
     async def _broadcast_startup_changelog(self, force_show: bool = False) -> None:
-        """Broadcasts git changelog delta on startup/reload to #minibots."""
+        """Broadcasts git changelog delta on startup/reload to admin channels."""
+        if not force_show and not self.config.data.get("BROADCAST_GIT_CHANGELOG", False):
+            return
         await asyncio.sleep(2.0)
         repo_dir = Path(__file__).resolve().parent
         state_file = repo_dir / "data" / "last_broadcasted_commit.txt"
@@ -408,15 +437,15 @@ class MinibotsLogicDaemon:
         total_cnt = len(commits)
         label = f"{total_cnt} improvement{'s' if total_cnt != 1 else ''}"
         lines = [
-            f"[\x02\x0310MINIBOTS::RELEASE\x0f] \x02New Build Deployed\x0f (\x02\x0303{current_hash}\x0f | \x0311{label}\x0f) \x0314[testing_mesh]\x0f:"
+            f"[\x02\x0310MINIBOTS::RELEASE\x0f] \x02New Build Deployed\x0f (\x02\x0303{current_hash}\x0f | \x0311{label}\x0f):"
         ]
         for c in commits:
             lines.append(f"  \x0303•\x0f {c[:160]}")
 
-        target_chans = ["#minibots", "#minibot"]
+        target_chans = self.admin_channels or ["#minibots", "#minibot"]
         for ch in target_chans:
             for l in lines:
-                self.send_privmsg("wireguard", ch, l)
+                self.send_privmsg(self.primary_network, ch, l)
                 await asyncio.sleep(0.15)
 
         try:
@@ -484,7 +513,7 @@ class MinibotsLogicDaemon:
 
     def _cmd_help(self, network: str, target: str, sender: str, args: List[str]) -> None:
         is_admin = self.dispatcher.is_admin(sender)
-        is_wireguard = network.startswith("wireguard")
+        is_trusted_net = self.is_trusted_network(network)
 
         if args:
             topic = args[0].strip()
@@ -493,9 +522,9 @@ class MinibotsLogicDaemon:
                 self.send_privmsg(network, target, l)
             return
 
-        lines = self.dispatcher.get_help_summary(is_admin=is_admin, is_wireguard=is_wireguard)
+        lines = self.dispatcher.get_help_summary(is_admin=is_admin, is_wireguard=is_trusted_net)
 
-        if is_wireguard:
+        if is_trusted_net:
             for l in lines[:4]:
                 self.send_privmsg(network, target, l)
         else:
@@ -670,7 +699,7 @@ class MinibotsLogicDaemon:
         if message is not None:
             self.send_privmsg(target_or_net, message_or_target, message)
         else:
-            self.send_privmsg("wireguard", target_or_net, message_or_target)
+            self.send_privmsg(self.primary_network, target_or_net, message_or_target)
 
     def _register_sideload_commands(self, mod: Any, mod_stem: str) -> List[str]:
         """Registers discovered framework commands on logic daemon dispatcher."""
@@ -849,8 +878,8 @@ class MinibotsLogicDaemon:
                 )
                 return
 
-            is_wg = network.startswith("wireguard") or network == "wg"
-            admin_channels = {"#minibots", "#minibot", "#jules"}
+            is_trusted_net = self.is_trusted_network(network)
+            admin_channels = {c.lower() for c in self.admin_channels}
             is_admin_chan = target.lower() in admin_channels
             is_admin = self.dispatcher.is_admin(sender)
 
@@ -861,7 +890,7 @@ class MinibotsLogicDaemon:
                 )
                 return
 
-            if not is_wg and not is_admin_chan:
+            if not is_trusted_net and not is_admin_chan:
                 self.send_privmsg(
                     network, target,
                     f"🧠 {C_RED}{C_BOLD}[DAI·Auth]{C_RESET} {sender}: Permission denied. Model switching is restricted to the internal WireGuard network or admin channels (#minibots)."
@@ -884,8 +913,8 @@ class MinibotsLogicDaemon:
 
         # 3. Model switch command (.model <name>)
         target_key = subcmd
-        is_wg = network.startswith("wireguard") or network == "wg"
-        admin_channels = {"#minibots", "#minibot", "#jules"}
+        is_trusted_net = self.is_trusted_network(network)
+        admin_channels = {c.lower() for c in self.admin_channels}
         is_admin_chan = target.lower() in admin_channels
         is_admin = self.dispatcher.is_admin(sender)
 
@@ -896,7 +925,7 @@ class MinibotsLogicDaemon:
             )
             return
 
-        if not is_wg and not is_admin_chan:
+        if not is_trusted_net and not is_admin_chan:
             self.send_privmsg(
                 network, target,
                 f"🧠 {C_RED}{C_BOLD}[DAI·Auth]{C_RESET} {sender}: Permission denied. Model switching is restricted to the internal WireGuard network or admin channels (#minibots)."
@@ -980,9 +1009,14 @@ class MinibotsLogicDaemon:
 
     def _cmd_granite(self, network: str, target: str, sender: str, args: List[str]) -> None:
         """IBM Granite CTI reasoning and threat analysis."""
-        # Yield in #lertz-dystopi if gr_dystopi bot is actively handling the channel
-        if target.lower() in ("#lertz-dystopi", "#lertz") and "gr_dystopi" in self.manager.active_bots:
+        yield_channels = [c.lower() for c in self.config.data.get("CTI", {}).get("YIELD_CHANNELS", [])]
+        if target.lower() in yield_channels:
             return
+
+        for bot in self.manager.active_bots.values():
+            if target.lower() in [c.lower() for c in bot.channels]:
+                if any("lertz_threat_intel" in mod or "granite" in mod for mod in bot.enabled_modules):
+                    return
 
         from sideload.lertz_threat_intel import handle_granite_command
 

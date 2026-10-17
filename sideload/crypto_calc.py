@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 crypto_calc.py — Cryptographic, Base Conversion & Calculation Module for Dystopi Minibots.
 Supports Base64, Hex, Hashes (MD5/SHA1/SHA256), JWT inspection, UUID, and unit conversion.

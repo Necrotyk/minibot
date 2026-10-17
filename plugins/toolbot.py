@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 toolbot.py — Dual Toolbot Plugin (Expanded Native Toolkits + FastMCP Bridge).
 Includes Security & Mesh Pack (hash, asn, cve, wg, http) and Dev/System Pack (json, regex, cron, crypto).
@@ -87,7 +89,7 @@ def inspect_http(url: str, timeout: float = 4.0) -> str:
         clean_url = f"http://{clean_url}"
 
     try:
-        req = urllib.request.Request(clean_url, headers={"User-Agent": "DystopiToolbot/1.0"})
+        req = urllib.request.Request(clean_url, headers={"User-Agent": "Minibots/1.0 (+https://github.com/Necrotyk/minibot)"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = resp.status
             server = resp.headers.get("Server", "Unknown")

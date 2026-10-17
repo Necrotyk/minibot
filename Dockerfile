@@ -14,7 +14,8 @@ FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    UMASK=0027
+    UMASK=0027 \
+    MINIBOTS_IPC_SOCK=/app/data/minibots_ipc.sock
 
 WORKDIR /app
 

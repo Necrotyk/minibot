@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 tool_catalog.py — Curated Tool Registry & Package Catalog for Dystopi Minibots.
 Enables discovery, metadata inspection, and zero-touch installation of tool scripts.

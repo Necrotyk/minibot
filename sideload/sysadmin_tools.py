@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 sysadmin_tools.py — Network Diagnostics & Sysadmin Module for Dystopi Minibots.
 Supports DNS dig, SSL certificate inspection, TCP port probe, and WHOIS/RDAP.

@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 git_ops.py — Automated Git Branching & Remote Provisioning for Jules.
 """

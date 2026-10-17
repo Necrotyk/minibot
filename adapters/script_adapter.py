@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 script_adapter.py — Universal Multi-Framework Script Adapter for Minibots.
 Seamlessly routes IRC events across Sopel, Errbot, Discord.py, Limnoria, SingleServerIRCBot, and Native plugins.
@@ -85,6 +87,31 @@ class ScriptAdapter:
                 cmd_name = parts[0].lower().lstrip("!.")
                 cmd_args = parts[1:]
 
+        # Determine admin and owner status
+        is_admin = False
+        is_owner = False
+        creator = getattr(self.minibot, "creator_nick", None)
+        if creator and sender_nick.lower() == creator.lower():
+            is_admin = True
+            is_owner = True
+
+        cfg = getattr(self.minibot, "config", None)
+        admin_nicks = []
+        if cfg:
+            if isinstance(cfg, dict):
+                admin_nicks = cfg.get("ADMIN_NICKS", [])
+            elif hasattr(cfg, "admin_nicks"):
+                admin_nicks = cfg.admin_nicks
+            elif hasattr(cfg, "data"):
+                admin_nicks = cfg.data.get("ADMIN_NICKS", [])
+
+        import fnmatch
+        for pat in admin_nicks:
+            if fnmatch.fnmatch(sender_nick.lower(), str(pat).lower()):
+                is_admin = True
+                if str(pat).lower() in (sender_nick.lower(), "admin"):
+                    is_owner = True
+
         # 1. Dispatch Sopel Commands & Rules
         for attr_name in dir(self.module):
             func = getattr(self.module, attr_name)
@@ -92,9 +119,29 @@ class ScriptAdapter:
                 # Sopel commands
                 sopel_cmds = getattr(func, "_sopel_commands", [])
                 if cmd_name and cmd_name in sopel_cmds:
+                    # Check command restrictions
+                    req_chans = getattr(func, "_sopel_require_chan", [])
+                    if req_chans and target.lower() not in req_chans:
+                        continue
+                    if getattr(func, "_sopel_require_chanmsg", False) and not target.startswith("#"):
+                        continue
+                    if getattr(func, "_sopel_require_privmsg", False) and target.startswith("#"):
+                        continue
+
+                    wrapper = SopelBotWrapper(self.minibot, target, sender_nick)
+                    trigger = SopelTrigger(
+                        bot_nick, target, sender_nick, f"{sender_nick}!user@host", text,
+                        is_admin=is_admin, is_owner=is_owner
+                    )
+
+                    if getattr(func, "_sopel_require_admin", False) and not is_admin:
+                        wrapper.reply("Admin privileges required.")
+                        continue
+                    if getattr(func, "_sopel_require_owner", False) and not is_owner:
+                        wrapper.reply("Owner privileges required.")
+                        continue
+
                     try:
-                        wrapper = SopelBotWrapper(self.minibot, target, sender_nick)
-                        trigger = SopelTrigger(bot_nick, target, sender_nick, f"{sender_nick}!user@host", text)
                         func(wrapper, trigger)
                     except Exception as e:
                         logger.error(f"[Sopel Error] {self.name}.{attr_name}: {e}")
@@ -104,9 +151,26 @@ class ScriptAdapter:
                 for pattern in sopel_rules:
                     m = re.search(pattern, text)
                     if m:
+                        req_chans = getattr(func, "_sopel_require_chan", [])
+                        if req_chans and target.lower() not in req_chans:
+                            continue
+                        if getattr(func, "_sopel_require_chanmsg", False) and not target.startswith("#"):
+                            continue
+                        if getattr(func, "_sopel_require_privmsg", False) and target.startswith("#"):
+                            continue
+
+                        wrapper = SopelBotWrapper(self.minibot, target, sender_nick)
+                        trigger = SopelTrigger(
+                            bot_nick, target, sender_nick, f"{sender_nick}!user@host", text,
+                            match_obj=m, is_admin=is_admin, is_owner=is_owner
+                        )
+
+                        if getattr(func, "_sopel_require_admin", False) and not is_admin:
+                            continue
+                        if getattr(func, "_sopel_require_owner", False) and not is_owner:
+                            continue
+
                         try:
-                            wrapper = SopelBotWrapper(self.minibot, target, sender_nick)
-                            trigger = SopelTrigger(bot_nick, target, sender_nick, f"{sender_nick}!user@host", text, match_obj=m)
                             func(wrapper, trigger)
                         except Exception as e:
                             logger.error(f"[Sopel Rule Error] {self.name}.{attr_name}: {e}")

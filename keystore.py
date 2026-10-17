@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 keystore.py — Canonical Secret Loader & Protection for the Minibots Ecosystem.
 Reads credentials from kernel keyrings (keyctl), systemd transient memory (LoadCredential),

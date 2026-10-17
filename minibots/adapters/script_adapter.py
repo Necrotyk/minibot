@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 script_adapter.py — Universal Multi-Framework Script Adapter for Minibots.
 Seamlessly routes IRC events across Sopel, Errbot, Discord.py, Limnoria, SingleServerIRCBot, and Native plugins.

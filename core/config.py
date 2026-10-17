@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 config.py — Configuration Loader with Keystore Variable Expansion.
 """
@@ -15,6 +17,10 @@ import keystore
 logger = logging.getLogger("Config")
 
 DEFAULT_CONFIG: Dict[str, Any] = {
+    "PRIMARY_NETWORK": os.environ.get("PRIMARY_NETWORK", "local"),
+    "ADMIN_NETWORKS": [n.strip() for n in os.environ.get("ADMIN_NETWORKS", "local").split(",") if n.strip()],
+    "ADMIN_CHANNELS": [c.strip() for c in os.environ.get("ADMIN_CHANNELS", "#minibot,#minibots,#dev").split(",") if c.strip()],
+    "AUTO_SPAWN_BOTS": [],
     "INTERNAL_SERVER": os.environ.get("INTERNAL_SERVER", "127.0.0.1"),
     "ADMIN_NICKS": [n.strip() for n in os.environ.get("ADMIN_NICKS", "admin*").split(",") if n.strip()],
     "SERVERS": {
@@ -23,7 +29,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "port": int(os.environ.get("IRC_PORT", "6667")),
             "nick": os.environ.get("IRC_NICK", "minibot"),
             "channels": [c.strip() for c in os.environ.get("IRC_CHANNELS", "#minibot,#dev").split(",") if c.strip()],
-            "ssl": os.environ.get("IRC_SSL", "false").lower() in ("true", "1", "yes")
+            "ssl": os.environ.get("IRC_SSL", "false").lower() in ("true", "1", "yes"),
+            "trusted": True,
+            "tls_verify": False
         }
     },
     "PASTEBIN_URL": os.environ.get("PASTEBIN_URL", "http://127.0.0.1:8000"),
@@ -111,3 +119,34 @@ class ConfigManager:
     @property
     def matrix(self) -> Dict[str, Any]:
         return self.data.get("MATRIX", {})
+
+    @property
+    def primary_network(self) -> str:
+        return self.data.get("PRIMARY_NETWORK", "local")
+
+    @property
+    def admin_networks(self) -> List[str]:
+        return self.data.get("ADMIN_NETWORKS", ["local"])
+
+    @property
+    def admin_channels(self) -> List[str]:
+        return self.data.get("ADMIN_CHANNELS", ["#minibot", "#minibots", "#dev"])
+
+    def is_trusted_network(self, network: str) -> bool:
+        if not network:
+            return False
+        net = str(network).lower().strip()
+        admin_nets = [str(n).lower().strip() for n in self.admin_networks]
+        if net in admin_nets:
+            return True
+        srv = self.servers.get(network, {})
+        if not srv:
+            for k, v in self.servers.items():
+                if k.lower() == net:
+                    srv = v
+                    break
+        if srv.get("trusted", False):
+            return True
+        if net.startswith("local") or net.startswith("wireguard") or net == "wg":
+            return True
+        return False

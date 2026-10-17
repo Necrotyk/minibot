@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from __future__ import annotations
+
 """
 logger.py — ANSI Colored Terminal, Systemd Journal & Rotating File Logger with Activity Ring Buffer.
 """
@@ -89,14 +91,14 @@ def setup_logger(name: str = "Minibots", level: int = logging.INFO) -> logging.L
         console_handler.setFormatter(ColoredFormatter())
         logger.addHandler(console_handler)
 
-        # 2. Rotating File Handler (/opt/minibots/data/minibots.log)
-        log_file_env = os.environ.get("MINIBOTS_LOG_FILE")
+        # 2. Rotating File Handler (data/minibot.log or /opt/minibots/data/minibots.log)
+        log_file_env = os.environ.get("MINIBOTS_LOG_FILE") or os.environ.get("MINIBOT_LOG_FILE")
         if not log_file_env:
             base_dir = Path(__file__).resolve().parents[1]
             data_dir = base_dir / "data"
             if not data_dir.exists() and os.path.exists("/opt/minibots/data"):
                 data_dir = Path("/opt/minibots/data")
-            log_file = data_dir / "minibots.log"
+            log_file = data_dir / "minibot.log"
         else:
             log_file = Path(log_file_env)
 
@@ -105,7 +107,7 @@ def setup_logger(name: str = "Minibots", level: int = logging.INFO) -> logging.L
             file_handler = RotatingFileHandler(
                 str(log_file),
                 maxBytes=5 * 1024 * 1024,  # 5 MB
-                backupCount=3,
+                backupCount=2,
                 encoding="utf-8"
             )
             file_handler.setFormatter(PlainFileFormatter())

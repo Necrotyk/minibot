@@ -77,8 +77,8 @@ def _is_cooldown_active(scope: str, nick: str) -> bool:
 class LertzDBReader:
     """Zero-trust, engine-enforced read-only PostgreSQL reader for Lertz telemetry."""
 
-    def __init__(self, dsn: str = "dbname=lertz user=minibots_reader sslmode=disable"):
-        self.dsn = dsn
+    def __init__(self, dsn: Optional[str] = None):
+        self.dsn = dsn or os.environ.get("CTI_DB_DSN", "dbname=cti user=minibots_reader sslmode=disable")
 
     def _get_connection(self):
         if not psycopg:
@@ -386,32 +386,35 @@ async def execute_granite_inference(
     model_alias = "granite-8b" if use_8b else "granite"
     expected_timeout = 120.0 if use_8b else timeout
 
+    analyst_name = os.environ.get("CTI_ANALYST_NAME", "SecOps Cybernetic Threat Analyst")
+    sys_env_desc = os.environ.get("CTI_SYSTEM_ENV", "monitored production infrastructure (Linux, Nginx, firewall, SSH)")
+
     system_prompts = {
         "actor": (
-            "You are the Dystopi Cybernetic Threat Analyst powered by IBM Granite. "
+            f"You are the {analyst_name} powered by IBM Granite. "
             "Analyze the pre-aggregated telemetry facts for the suspect IP. "
             "Provide an executive evaluation with: 1) Threat Actor Tier (e.g. Commodity Scanner, Automated Botnet, Targeted Hunter), "
             "2) Tool Fingerprint (e.g. Nuclei, ZGrab, sqlmap, custom script), 3) Attack Objective, 4) Defensive Status. "
             "Strictly concise: maximum 2 to 3 lines. Avoid filler text. Output factual technical security analysis."
         ),
         "campaign": (
-            "You are the Dystopi Cybernetic Threat Analyst powered by IBM Granite. "
+            f"You are the {analyst_name} powered by IBM Granite. "
             "Analyze the multi-IP cluster telemetry facts. "
             "Identify: 1) Coordinated scan campaigns, 2) Common TTPs or exploit targets across subnets, "
             "3) Defensive containment status. Strictly concise: maximum 2 to 3 lines."
         ),
         "mitre": (
-            "You are the Dystopi Cybernetic Threat Analyst powered by IBM Granite. "
+            f"You are the {analyst_name} powered by IBM Granite. "
             "Map the observed IP probe trajectory to official MITRE ATT&CK Tactics & Techniques (e.g. T1190, T1595, T1078). "
             "List specific techniques and brief defense advice. Strictly concise: maximum 2 lines."
         ),
         "cve": (
-            "You are the Dystopi Cybernetic Threat Analyst powered by IBM Granite. "
-            "Assess the CVE impact against local Dystopi systems (Debian Linux, Nginx L7, pure nftables, OpenSSH on wg0 only). "
+            f"You are the {analyst_name} powered by IBM Granite. "
+            f"Assess the CVE impact against {sys_env_desc}. "
             "State local exposure level, observed exploit probes, and mitigation status. Strictly concise: maximum 2 lines."
         ),
         "ask": (
-            "You are the Dystopi Cybernetic Threat Analyst powered by IBM Granite. "
+            f"You are the {analyst_name} powered by IBM Granite. "
             "Answer the operator's question using the provided 24h telemetry facts. "
             "Answer factually and concisely in 1 to 2 lines for an IRC SecOps team."
         )
