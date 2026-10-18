@@ -13,6 +13,7 @@ DATA_DIR="$SCRIPT_DIR/data"
 PID_FILE="$DATA_DIR/minibot.pid"
 LOG_FILE="$DATA_DIR/minibot.log"
 CONFIG_FILE="$SCRIPT_DIR/config.json"
+STOPPED_FILE="$DATA_DIR/minibot.stopped"
 
 is_bot_running() {
     if [[ ! -f "$PID_FILE" ]]; then
@@ -65,6 +66,16 @@ get_python_bin() {
 
 start_bot() {
     local mode="${1:-normal}"
+    if [[ "$mode" == "watchdog" ]]; then
+        if [[ -f "$STOPPED_FILE" ]]; then
+            # Bot was explicitly stopped by operator; do not auto-revive via watchdog
+            return 0
+        fi
+    else
+        # Explicit start or restart: clear stopped marker
+        rm -f "$STOPPED_FILE"
+    fi
+
     if is_bot_running; then
         local pid
         pid="$(cat "$PID_FILE")"
@@ -112,6 +123,12 @@ start_bot() {
 }
 
 stop_bot() {
+    mkdir -p "$DATA_DIR"
+    touch "$STOPPED_FILE"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user stop minibot-lite.service 2>/dev/null || true
+    fi
+
     if is_bot_running; then
         local pid
         pid="$(cat "$PID_FILE")"
@@ -200,9 +217,10 @@ status_bot() {
 }
 
 enable_bot() {
+    rm -f "$STOPPED_FILE"
     local enabled_any=0
 
-    # 1. User crontab watchdog
+    # 1. Primary persistence: user crontab watchdog
     if command -v crontab >/dev/null 2>&1; then
         local existing_cron
         existing_cron="$(crontab -l 2>/dev/null || true)"
@@ -222,13 +240,21 @@ enable_bot() {
         if echo "$new_cron" | crontab - 2>/dev/null; then
             echo "[✓] Crontab watchdog installed successfully (@reboot and every 5 minutes)."
             enabled_any=1
+            # Clean up user systemd service if present so both mechanisms never fight
+            local svc_file="$HOME/.config/systemd/user/minibot-lite.service"
+            if [[ -f "$svc_file" ]] && command -v systemctl >/dev/null 2>&1; then
+                systemctl --user stop minibot-lite.service >/dev/null 2>&1 || true
+                systemctl --user disable minibot-lite.service >/dev/null 2>&1 || true
+                rm -f "$svc_file"
+                systemctl --user daemon-reload >/dev/null 2>&1 || true
+            fi
         else
             echo "[!] Failed to update user crontab."
         fi
     fi
 
-    # 2. systemd --user service
-    if command -v systemctl >/dev/null 2>&1; then
+    # 2. Fallback persistence: systemd --user service (ONLY if crontab is NOT available)
+    if [[ "$enabled_any" -eq 0 ]] && command -v systemctl >/dev/null 2>&1; then
         if systemctl --user list-units >/dev/null 2>&1; then
             local user_svc_dir="$HOME/.config/systemd/user"
             mkdir -p "$user_svc_dir"
@@ -239,10 +265,12 @@ Description=Minibots Lite Standalone IRC Bot
 After=network.target
 
 [Service]
-Type=simple
+Type=forking
+PIDFile=$PID_FILE
 WorkingDirectory=$SCRIPT_DIR
-ExecStart=/usr/bin/env python3 $SCRIPT_DIR/run_bot.py --daemon
-Restart=always
+ExecStart=/bin/bash $SCRIPT_DIR/minibot.sh start
+ExecStop=/bin/bash $SCRIPT_DIR/minibot.sh stop
+Restart=on-failure
 RestartSec=10
 
 [Install]
@@ -250,7 +278,7 @@ WantedBy=default.target
 EOF
             systemctl --user daemon-reload >/dev/null 2>&1 || true
             if systemctl --user enable minibot-lite.service >/dev/null 2>&1; then
-                echo "[✓] systemd user unit installed and enabled: $svc_file"
+                echo "[✓] systemd user unit installed and enabled as fallback: $svc_file"
                 enabled_any=1
             fi
         fi
@@ -264,6 +292,7 @@ EOF
 }
 
 disable_bot() {
+    rm -f "$STOPPED_FILE"
     # 1. Remove crontab entries
     if command -v crontab >/dev/null 2>&1; then
         local existing_cron

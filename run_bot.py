@@ -108,6 +108,24 @@ def persist_channel_change(config_path: Optional[str], network: str, channel: st
         return False
 
 
+def is_private_or_loopback_host(host: str) -> bool:
+    """Checks if a hostname/IP is loopback, localhost, or private RFC1918."""
+    if not host:
+        return False
+    h = host.strip().lower()
+    if h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
+        return True
+    if h.startswith("10.") or h.startswith("192.168.") or h.startswith("127."):
+        return True
+    if h.startswith("172."):
+        parts = h.split(".")
+        if len(parts) >= 2 and parts[1].isdigit():
+            val = int(parts[1])
+            if 16 <= val <= 31:
+                return True
+    return False
+
+
 def import_sopel_config(
     sopel_cfg_path: Optional[str] = None,
     out_config_json: Optional[str] = None,
@@ -169,7 +187,9 @@ def import_sopel_config(
         channels = ["#minibot"]
 
     auth_pass = core.get("auth_password") or core.get("nickserv_password") or ""
-    admin_nicks = [f"{owner}*"] if owner else ["admin*"]
+    # Exact admin nick matching by default without appending '*' wildcard unless explicitly provided
+    admin_nicks = [owner] if owner else ["admin"]
+    is_trusted = is_private_or_loopback_host(host)
 
     config_data = {
         "PRIMARY_NETWORK": "primary",
@@ -183,7 +203,7 @@ def import_sopel_config(
                 "nick": nick,
                 "channels": channels,
                 "ssl": use_ssl,
-                "trusted": True,
+                "trusted": is_trusted,
                 "tls_verify": verify_ssl,
                 "nickserv_password": auth_pass
             }
@@ -528,6 +548,12 @@ class StandaloneRunner:
                 logger.debug(f"Error in mtime watcher: {e}")
 
     async def _connect_and_run(self):
+        # Reset nickname, state, and queue for clean connection session
+        self.current_nick = self.initial_nick
+        self.bot.nick = self.initial_nick
+        self._reclaim_needed = False
+        self._send_queue = asyncio.Queue()
+
         ssl_ctx = ssl.create_default_context() if self.use_ssl else None
         if ssl_ctx and not self.tls_verify:
             ssl_ctx.check_hostname = False
@@ -681,11 +707,20 @@ def main():
         )
         file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)-7s] %(name)s: %(message)s"))
 
+        # Attach to root logger so all modules/plugins log to data/minibot.log
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.INFO)
+        for h in list(root_logger.handlers):
+            if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
+                root_logger.removeHandler(h)
+        root_logger.addHandler(file_handler)
+
         # Route logger handlers
         for h in list(logger.handlers):
             if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
                 logger.removeHandler(h)
-        logger.addHandler(file_handler)
+        if file_handler not in logger.handlers:
+            logger.addHandler(file_handler)
 
         def handle_uncaught_exception(exc_type, exc_value, exc_traceback):
             if issubclass(exc_type, KeyboardInterrupt):
@@ -718,6 +753,10 @@ def main():
     use_ssl = getattr(args, "ssl", None) if args else None
     tls_verify = False if (args and getattr(args, "insecure", False)) else None
 
+    # Set up event loop before StandaloneRunner instantiation for Python 3.7-3.9 compatibility
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     runner = StandaloneRunner(
         nick=nick,
         network=network,
@@ -729,9 +768,6 @@ def main():
         tls_verify=tls_verify,
         config_path=config_path,
     )
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
 
     def _sig_handler():
         logger.info("Received termination signal, shutting down...")

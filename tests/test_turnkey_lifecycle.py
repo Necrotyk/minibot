@@ -64,7 +64,7 @@ class TestTurnkeyLifecycle(unittest.TestCase):
             data = json.load(f)
 
         self.assertEqual(data["PRIMARY_NETWORK"], "primary")
-        self.assertIn("SuperAdmin*", data["ADMIN_NICKS"])
+        self.assertEqual(data["ADMIN_NICKS"], ["SuperAdmin"])
         self.assertIn("#general", data["ADMIN_CHANNELS"])
         self.assertIn("#sopel-room", data["ADMIN_CHANNELS"])
 
@@ -72,6 +72,7 @@ class TestTurnkeyLifecycle(unittest.TestCase):
         self.assertEqual(srv["host"], "irc.example.net")
         self.assertEqual(srv["port"], 6697)
         self.assertTrue(srv["ssl"])
+        self.assertFalse(srv["trusted"])
         self.assertFalse(srv["tls_verify"])
         self.assertEqual(srv["nick"], "TestSopelBot")
         self.assertEqual(srv["nickserv_password"], "SecretNickPass")
@@ -260,6 +261,88 @@ class TestTurnkeyLifecycle(unittest.TestCase):
         res_stat = subprocess.run([sh_path, "status"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.assertEqual(res_stat.returncode, 0)
         self.assertIn("Status:", res_stat.stdout)
+
+    def test_import_sopel_config_trusted_and_public_hosts(self):
+        """Tests that import_sopel_config sets trusted=False for public hosts and trusted=True for loopback/private."""
+        scenarios = [
+            ("irc.libera.chat", False),
+            ("irc.oftc.net", False),
+            ("127.0.0.1", True),
+            ("localhost", True),
+            ("10.99.0.1", True),
+            ("192.168.1.100", True),
+            ("172.16.0.5", True),
+        ]
+        for host, expected_trusted in scenarios:
+            cfg_path = os.path.join(self.test_dir, f"test_{expected_trusted}_{host.replace('.', '_')}.cfg")
+            out_json = os.path.join(self.test_dir, f"out_{expected_trusted}_{host.replace('.', '_')}.json")
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                f.write(
+                    f"[core]\n"
+                    f"host = {host}\n"
+                    f"nick = TestBot\n"
+                    f"owner = AliceAdmin\n"
+                    f"channels = #test\n"
+                )
+            import_sopel_config(sopel_cfg_path=cfg_path, out_config_json=out_json)
+            with open(out_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            srv = data["SERVERS"]["primary"]
+            self.assertEqual(
+                srv["trusted"],
+                expected_trusted,
+                f"Expected trusted={expected_trusted} for host {host}, got {srv['trusted']}"
+            )
+            # Ensure owner is exact without wildcard
+            self.assertEqual(data["ADMIN_NICKS"], ["AliceAdmin"])
+
+    def test_standalone_runner_reset_on_reconnect(self):
+        """Tests that StandaloneRunner resets current_nick, bot.nick, _reclaim_needed, and queue on reconnect."""
+        runner = StandaloneRunner(
+            nick="coolbot",
+            network="local",
+            channels=["#lobby"],
+            modules=[],
+        )
+
+        # Mutate to simulate state during a nickname collision
+        runner.current_nick = "coolbot_"
+        runner.bot.nick = "coolbot_"
+        runner._reclaim_needed = True
+        runner._send_queue.put_nowait("STALE_MESSAGE_FROM_PREVIOUS_SOCKET")
+
+        # Mock open_connection to raise an error so _connect_and_run resets state and exits
+        with patch("asyncio.open_connection", side_effect=ConnectionRefusedError("Mock connection error")):
+            with self.assertRaises(ConnectionRefusedError):
+                asyncio.run(runner._connect_and_run())
+
+        # Verify state is reset to clean session defaults
+        self.assertEqual(runner.current_nick, "coolbot")
+        self.assertEqual(runner.bot.nick, "coolbot")
+        self.assertFalse(runner._reclaim_needed)
+        # Ensure fresh queue without stale messages
+        self.assertTrue(runner._send_queue.empty())
+
+    def test_minibot_sh_watchdog_stopped_marker(self):
+        """Tests that ./minibot.sh watchdog respects data/minibot.stopped marker and exits silently."""
+        sh_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "minibot.sh")
+        data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+        stopped_file = os.path.join(data_dir, "minibot.stopped")
+        pid_file = os.path.join(data_dir, "minibot.pid")
+
+        os.makedirs(data_dir, exist_ok=True)
+        try:
+            # Create stopped marker
+            with open(stopped_file, "w") as f:
+                f.write("1\n")
+
+            import subprocess
+            res = subprocess.run([sh_path, "watchdog"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertEqual(res.returncode, 0)
+            self.assertFalse(os.path.exists(pid_file))
+        finally:
+            if os.path.exists(stopped_file):
+                os.remove(stopped_file)
 
 
 if __name__ == "__main__":

@@ -129,13 +129,22 @@ else
         CHAN_JSON="\"#minibot\""
     fi
 
+    # Only set trusted: true for loopback or private RFC1918 networks; false for public IRC
+    IS_TRUSTED="false"
+    CLEAN_HOST="$(echo "$SERVER_HOST" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    if [[ "$CLEAN_HOST" == "127.0.0.1" || "$CLEAN_HOST" == "localhost" || "$CLEAN_HOST" == "::1" || "$CLEAN_HOST" == 10.* || "$CLEAN_HOST" == 192.168.* || "$CLEAN_HOST" == 127.* ]]; then
+        IS_TRUSTED="true"
+    elif [[ "$CLEAN_HOST" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]]; then
+        IS_TRUSTED="true"
+    fi
+
     # Generate minimal config.json
     cat > "$CONFIG_FILE" <<EOF
 {
   "PRIMARY_NETWORK": "primary",
   "ADMIN_NETWORKS": ["primary"],
   "ADMIN_CHANNELS": [$CHAN_JSON],
-  "ADMIN_NICKS": ["$ADMIN_NICK*"],
+  "ADMIN_NICKS": ["$ADMIN_NICK"],
   "SERVERS": {
     "primary": {
       "host": "$SERVER_HOST",
@@ -143,7 +152,7 @@ else
       "nick": "$BOT_NICK",
       "channels": [$CHAN_JSON],
       "ssl": $SERVER_SSL,
-      "trusted": true,
+      "trusted": $IS_TRUSTED,
       "tls_verify": true,
       "nickserv_password": "$NICKSERV_PASS"
     }
