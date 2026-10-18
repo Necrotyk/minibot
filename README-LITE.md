@@ -46,24 +46,48 @@ Once Minibot is running, configured bot administrators (`ADMIN_NICKS` in `config
 
 | IRC Command | Description |
 | :--- | :--- |
-| `!join <#channel>` | Joins `<#channel>` immediately **and persists** it to `config.json` so it is rejoined on restarts. |
-| `!part [#channel]` | Parts the specified (or current) channel and removes it from `config.json`. |
-| `!reload` (or `!minibot reload`) | Live reloads `config.json` and hot-reloads all plugins in `sideload/` without disconnecting. |
-| `!botstatus` | Displays uptime, Python runtime version, TLS mode, active channels, and loaded plugin count. |
+| `!server list` (or `!servers`) | Displays all configured networks, their host:port, connection status, nick, and joined channels. |
+| `!server add <net> <host[:port]> [ssl\|plain] [#chan] [nick]` | Dynamically adds and connects a new network runner immediately and persists to `config.json`. |
+| `!server del <net>` (or `!server remove <net>`) | Gracefully disconnects the specified network runner and removes it from `config.json`. |
+| `!join <#channel>` or `!join <network> <#channel>` | Joins `<#channel>` (on current or target network) **and persists** it to `config.json`. |
+| `!part [#channel]` or `!part <network> <#channel>` | Parts the specified channel (on current or target network) and removes it from `config.json`. |
+| `!reload` (or `!minibot reload`) | Live reloads `config.json` and hot-reloads all plugins in `sideload/` across all networks without disconnecting. |
+| `!botstatus` | Displays uptime, connected networks count/names, Python version, TLS mode, channels, and plugin count. |
+
+---
+
+## 🌐 Concurrent Multi-Server Multiplexing
+
+Minibot Lite supports connecting to multiple IRC networks concurrently in a single lightweight process using 100% Python Standard Library `asyncio`:
+
+- **Connect to all configured networks:**
+  ```bash
+  ./minibot.sh start
+  # Or foreground:
+  python3 run_bot.py
+  ```
+- **Connect to specific networks:**
+  ```bash
+  python3 run_bot.py --network libera,oftc
+  ```
+- **Shared Plugin Engine:** Plugins in `sideload/` and the live `mtime` file watcher are shared across all active network connections. Hot-reloading a plugin (`!reload` or modifying a script) updates all networks simultaneously.
+- **Unified Log Multiplexing:** Logs in `data/minibot.log` are prefixed with `[network:nick]` (e.g. `[libera:minibot]` and `[oftc:minibot]`) for clean readability.
 
 ---
 
 ## 📥 Automatic Sopel Config & Plugin Migration
 
 Migrating an existing Sopel installation to Minibot Lite requires zero manual editing:
-1. **Interactive Detection:** `./setup-lite.sh` or `./minibot.sh` automatically detects existing Sopel configurations (`~/.sopel/default.cfg` or `~/.config/sopel/default.cfg`) and asks if you wish to import them.
-2. **One-Command CLI Import:**
+1. **Interactive Detection:** `./setup-lite.sh` or `./minibot.sh` automatically detects existing Sopel configurations (`~/.sopel/*.cfg` or `~/.config/sopel/*.cfg`) and offers to import them.
+2. **One-Command CLI Import (Single or Multi-Server):**
    ```bash
    python3 run_bot.py --import-sopel
-   # Or with explicit path:
+   # Or import all .cfg files from a directory:
+   python3 run_bot.py --import-sopel ~/.sopel/
+   # Or with explicit file path:
    python3 run_bot.py --import-sopel /path/to/default.cfg
    ```
-   This automatically converts `host`, `port`, `ssl`, `nick`, `owner`, `channels`, and `nickserv_password` to `config.json` (`chmod 600`) and copies any custom `.py` plugins from your Sopel plugins directory to `sideload/`.
+   This automatically converts `host`, `port`, `ssl`, `nick`, `owner`, `channels`, and `nickserv_password` for all discovered configs into `config.json` (`chmod 600`) and copies custom `.py` plugins from Sopel directories to `sideload/`.
 
 ---
 

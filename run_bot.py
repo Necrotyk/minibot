@@ -94,7 +94,13 @@ def persist_channel_change(config_path: Optional[str], network: str, channel: st
             if clean_chan not in admin_chans:
                 admin_chans.append(clean_chan)
         elif action == "remove":
-            admin_chans = [c for c in admin_chans if c.lower() != clean_chan.lower()]
+            remaining_in_other = False
+            for s_v in servers.values():
+                if any(c.lower() == clean_chan.lower() for c in s_v.get("channels", [])):
+                    remaining_in_other = True
+                    break
+            if not remaining_in_other:
+                admin_chans = [c for c in admin_chans if c.lower() != clean_chan.lower()]
         data["ADMIN_CHANNELS"] = admin_chans
 
         tmp_file = cfg_file.with_suffix(".tmp")
@@ -105,6 +111,59 @@ def persist_channel_change(config_path: Optional[str], network: str, channel: st
         return True
     except Exception as e:
         logger.error(f"Failed to persist channel change to {cfg_file}: {e}")
+        return False
+
+
+def persist_server_change(
+    config_path: Optional[str],
+    network: str,
+    server_data: Optional[Dict[str, Any]],
+    action: str
+) -> bool:
+    """
+    Persists adding or removing an IRC server entry in config.json.
+    action: 'add' or 'remove'
+    """
+    cfg_file = Path(config_path) if config_path else (BASE_DIR / "config.json")
+    if not cfg_file.exists():
+        return False
+
+    try:
+        with open(cfg_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        servers = data.setdefault("SERVERS", {})
+        net_key = network.lower()
+
+        if action == "add" and server_data is not None:
+            servers[net_key] = server_data
+            admin_nets = data.setdefault("ADMIN_NETWORKS", [])
+            if net_key not in admin_nets:
+                admin_nets.append(net_key)
+            if not data.get("PRIMARY_NETWORK"):
+                data["PRIMARY_NETWORK"] = net_key
+            admin_chans = data.setdefault("ADMIN_CHANNELS", [])
+            for c in server_data.get("channels", []):
+                if c not in admin_chans:
+                    admin_chans.append(c)
+
+        elif action in ("remove", "del"):
+            if net_key in servers:
+                del servers[net_key]
+            admin_nets = data.get("ADMIN_NETWORKS", [])
+            if net_key in admin_nets:
+                data["ADMIN_NETWORKS"] = [n for n in admin_nets if n != net_key]
+            if data.get("PRIMARY_NETWORK") == net_key:
+                data["PRIMARY_NETWORK"] = next(iter(servers.keys())) if servers else "primary"
+
+        tmp_file = cfg_file.with_suffix(".tmp")
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        tmp_file.replace(cfg_file)
+        os.chmod(cfg_file, 0o600)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to persist server change to {cfg_file}: {e}")
         return False
 
 
@@ -132,83 +191,149 @@ def import_sopel_config(
     sideload_dir: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Imports configuration from an existing Sopel installation (default.cfg)
-    and converts it into Minibots config.json format using only the Python standard library.
+    Imports configuration from existing Sopel installation(s) (.cfg files)
+    and converts them into Minibots config.json format using only the Python standard library.
+    Supports single file, directory of .cfg files, or auto-discovery across ~/.sopel and ~/.config/sopel.
     Optionally copies custom .py plugins from Sopel plugins/modules directory to sideload/.
     """
-    candidates = [
-        sopel_cfg_path,
-        os.path.expanduser("~/.sopel/default.cfg"),
-        os.path.expanduser("~/.config/sopel/default.cfg"),
+    cfg_files: List[str] = []
+    sopel_dirs = [
+        Path.home() / ".sopel",
+        Path.home() / ".config" / "sopel",
     ]
-    cfg_file = None
-    for cand in candidates:
-        if cand and os.path.isfile(cand):
-            cfg_file = cand
-            break
 
-    if not cfg_file:
-        raise FileNotFoundError(f"No Sopel configuration found. Checked: {[c for c in candidates if c]}")
+    if sopel_cfg_path:
+        p = Path(sopel_cfg_path)
+        if p.is_file():
+            cfg_files.append(str(p))
+        elif p.is_dir():
+            cfg_files.extend(sorted(str(f) for f in p.glob("*.cfg")))
+    else:
+        for sdir in sopel_dirs:
+            if sdir.is_dir():
+                found = sorted(str(f) for f in sdir.glob("*.cfg"))
+                cfg_files.extend(found)
+        if not cfg_files:
+            for sdir in sopel_dirs:
+                def_cfg = sdir / "default.cfg"
+                if def_cfg.is_file():
+                    cfg_files.append(str(def_cfg))
 
-    cp = configparser.ConfigParser(interpolation=None)
-    cp.read(cfg_file, encoding="utf-8")
+    if not cfg_files:
+        searched = sopel_cfg_path or [str(d) for d in sopel_dirs]
+        raise FileNotFoundError(f"No Sopel configuration found. Checked: {searched}")
 
-    core = cp["core"] if "core" in cp else {}
-
-    host = core.get("host", "irc.libera.chat")
-    raw_port = core.get("port", "6697")
-    try:
-        port = int(raw_port)
-    except Exception:
-        port = 6697
-
-    def _bool(val: Any, default: bool = True) -> bool:
-        if val is None:
-            return default
-        s = str(val).strip().lower()
-        return s in ("true", "1", "yes", "on")
-
-    use_ssl = _bool(core.get("use_ssl"), default=True)
-    verify_ssl = _bool(core.get("verify_ssl"), default=True)
-
-    nick = core.get("nick", "minibot").strip()
-    owner = core.get("owner", "").strip()
-
-    raw_channels = core.get("channels", "")
-    chan_tokens = re.split(r'[,\s\n\r]+', raw_channels)
-    channels: List[str] = []
-    for ct in chan_tokens:
-        ct = ct.strip()
-        if ct:
-            clean = ct if ct.startswith("#") else f"#{ct}"
-            if clean not in channels:
-                channels.append(clean)
-    if not channels:
-        channels = ["#minibot"]
-
-    auth_pass = core.get("auth_password") or core.get("nickserv_password") or ""
-    # Exact admin nick matching by default without appending '*' wildcard unless explicitly provided
-    admin_nicks = [owner] if owner else ["admin"]
-    is_trusted = is_private_or_loopback_host(host)
-
-    config_data = {
-        "PRIMARY_NETWORK": "primary",
-        "ADMIN_NETWORKS": ["primary"],
-        "ADMIN_CHANNELS": channels,
-        "ADMIN_NICKS": admin_nicks,
-        "SERVERS": {
-            "primary": {
-                "host": host,
-                "port": port,
-                "nick": nick,
-                "channels": channels,
-                "ssl": use_ssl,
-                "trusted": is_trusted,
-                "tls_verify": verify_ssl,
-                "nickserv_password": auth_pass
-            }
-        }
+    config_data: Dict[str, Any] = {
+        "PRIMARY_NETWORK": "",
+        "ADMIN_NETWORKS": [],
+        "ADMIN_CHANNELS": [],
+        "ADMIN_NICKS": [],
+        "SERVERS": {}
     }
+
+    target_sideload = Path(sideload_dir) if sideload_dir else (BASE_DIR / "sideload")
+    target_sideload.mkdir(parents=True, exist_ok=True)
+
+    plugin_dirs: List[Path] = [
+        Path.home() / ".sopel" / "plugins",
+        Path.home() / ".sopel" / "modules",
+        Path.home() / ".config" / "sopel" / "plugins",
+    ]
+
+    for cfg_file in cfg_files:
+        cp = configparser.ConfigParser(interpolation=None)
+        cp.read(cfg_file, encoding="utf-8")
+
+        core = cp["core"] if "core" in cp else {}
+        host = core.get("host", "irc.libera.chat").strip()
+        raw_port = core.get("port", "6697")
+        try:
+            port = int(raw_port)
+        except Exception:
+            port = 6697
+
+        def _bool(val: Any, default: bool = True) -> bool:
+            if val is None:
+                return default
+            s = str(val).strip().lower()
+            return s in ("true", "1", "yes", "on")
+
+        use_ssl = _bool(core.get("use_ssl"), default=True)
+        verify_ssl = _bool(core.get("verify_ssl"), default=True)
+
+        nick = core.get("nick", "minibot").strip()
+        owner = core.get("owner", "").strip()
+
+        raw_channels = core.get("channels", "")
+        chan_tokens = re.split(r'[,\s\n\r]+', raw_channels)
+        channels: List[str] = []
+        for ct in chan_tokens:
+            ct = ct.strip()
+            if ct:
+                clean = ct if ct.startswith("#") else f"#{ct}"
+                if clean not in channels:
+                    channels.append(clean)
+        if not channels:
+            channels = ["#minibot"]
+
+        auth_pass = core.get("auth_password") or core.get("nickserv_password") or ""
+        if owner and owner not in config_data["ADMIN_NICKS"]:
+            config_data["ADMIN_NICKS"].append(owner)
+
+        for c in channels:
+            if c not in config_data["ADMIN_CHANNELS"]:
+                config_data["ADMIN_CHANNELS"].append(c)
+
+        is_trusted = is_private_or_loopback_host(host)
+
+        # Derive network key
+        stem = Path(cfg_file).stem.lower()
+        if stem.startswith("test"):
+            net_key = "primary"
+        elif stem in ("default", "config"):
+            if len(cfg_files) > 1:
+                h_lower = host.lower()
+                for known in ("libera", "oftc", "rizon", "efnet", "undernet", "dalnet", "esper"):
+                    if known in h_lower:
+                        net_key = known
+                        break
+                else:
+                    net_key = "primary"
+            else:
+                net_key = "primary"
+        else:
+            net_key = stem
+
+        base_net_key = net_key
+        counter = 2
+        while net_key in config_data["SERVERS"]:
+            net_key = f"{base_net_key}_{counter}"
+            counter += 1
+
+        config_data["SERVERS"][net_key] = {
+            "host": host,
+            "port": port,
+            "nick": nick,
+            "channels": channels,
+            "ssl": use_ssl,
+            "trusted": is_trusted,
+            "tls_verify": verify_ssl,
+            "nickserv_password": auth_pass
+        }
+        if net_key not in config_data["ADMIN_NETWORKS"]:
+            config_data["ADMIN_NETWORKS"].append(net_key)
+
+        if not config_data["PRIMARY_NETWORK"]:
+            config_data["PRIMARY_NETWORK"] = net_key
+
+        sopel_dir = Path(cfg_file).parent
+        for sub in ("plugins", "modules"):
+            candidate_pdir = sopel_dir / sub
+            if candidate_pdir.is_dir() and candidate_pdir not in plugin_dirs:
+                plugin_dirs.append(candidate_pdir)
+
+    if not config_data["ADMIN_NICKS"]:
+        config_data["ADMIN_NICKS"] = ["admin"]
 
     out_path = Path(out_config_json) if out_config_json else (BASE_DIR / "config.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -216,17 +341,6 @@ def import_sopel_config(
         json.dump(config_data, f, indent=2)
     os.chmod(out_path, 0o600)
 
-    target_sideload = Path(sideload_dir) if sideload_dir else (BASE_DIR / "sideload")
-    target_sideload.mkdir(parents=True, exist_ok=True)
-
-    sopel_dir = Path(cfg_file).parent
-    plugin_dirs = [
-        sopel_dir / "plugins",
-        sopel_dir / "modules",
-        Path.home() / ".sopel" / "plugins",
-        Path.home() / ".sopel" / "modules",
-        Path.home() / ".config" / "sopel" / "plugins",
-    ]
     copied = []
     for pdir in plugin_dirs:
         if pdir.is_dir():
@@ -236,7 +350,12 @@ def import_sopel_config(
                     shutil.copy2(py_file, dest)
                     copied.append(py_file.name)
 
-    return {"config": config_data, "file": cfg_file, "copied_plugins": copied}
+    return {
+        "config": config_data,
+        "file": cfg_files[0],
+        "files": cfg_files,
+        "copied_plugins": copied
+    }
 
 
 class StandaloneRunner:
@@ -254,11 +373,15 @@ class StandaloneRunner:
         tls_verify: Optional[bool] = None,
         nickserv_password: Optional[str] = None,
         config_path: Optional[str] = None,
+        sideload_engine: Optional[SideloadEngine] = None,
+        server_manager: Optional[Any] = None,
     ):
         self.initial_nick = nick
         self.current_nick = nick
         self.nick = nick
         self.network = (network or "local").lower()
+        self.status_str = "INITIALIZING"
+        self.server_manager = server_manager
 
         # Parse comma-separated or list channels
         if isinstance(channels, str):
@@ -297,7 +420,7 @@ class StandaloneRunner:
         is_trusted = self.cfg_mgr.is_trusted_network(self.network)
         self.rate_limiter = TokenBucket(capacity=20.0, refill_rate=10.0) if is_trusted else TokenBucket(capacity=4.0, refill_rate=0.5)
 
-        self.sideload_engine = SideloadEngine()
+        self.sideload_engine = sideload_engine or SideloadEngine()
         creator = self.cfg_mgr.admin_nicks[0] if self.cfg_mgr.admin_nicks else "admin"
         self.bot = MiniBot(
             nick=self.current_nick,
@@ -319,6 +442,16 @@ class StandaloneRunner:
         # Attach modules
         self._attach_modules()
 
+    def stop(self) -> None:
+        """Signals the runner to terminate and closes the active socket connection."""
+        self._running = False
+        self.status_str = "STOPPED"
+        if self._writer:
+            try:
+                self._writer.close()
+            except Exception:
+                pass
+
     def _raw_send(self, bot_nick: str, line: str) -> None:
         asyncio.create_task(self._send_queue.put(line))
 
@@ -334,14 +467,15 @@ class StandaloneRunner:
                 mod_key = f"sideload_{Path(script_path).stem}"
                 self.bot.enable_module(mod_key, adapter)
                 self._attached_adapters[mod_key] = adapter
-                logger.info(f"Attached module '{mod_name}' to {self.current_nick}")
+                logger.info(f"[{self.network}:{self.current_nick}] Attached module '{mod_name}'")
             else:
-                logger.error(f"Failed to load module '{mod_name}'")
+                logger.error(f"[{self.network}:{self.current_nick}] Failed to load module '{mod_name}'")
 
     def _reload_modules(self) -> None:
         """In-process hot-reload of all attached sideload plugins without dropping IRC socket."""
-        logger.info(f"Hot-reloading modules for {self.current_nick}...")
-        self.sideload_engine.loaded_modules.clear()
+        logger.info(f"[{self.network}:{self.current_nick}] Hot-reloading modules...")
+        if self.server_manager is None:
+            self.sideload_engine.loaded_modules.clear()
         self._attach_modules()
 
     def _is_admin(self, nick: str) -> bool:
@@ -369,13 +503,13 @@ class StandaloneRunner:
                 await asyncio.sleep(wait)
             self.rate_limiter.consume(1.0)
 
-            logger.info(f"[{self.current_nick} OUT] {clean}")
+            logger.info(f"[{self.network}:{self.current_nick} OUT] {clean}")
             if self._writer and not self._writer.is_closing():
                 try:
                     self._writer.write(f"{clean}\r\n".encode("utf-8"))
                     await self._writer.drain()
                 except Exception as e:
-                    logger.warning(f"Error writing to socket: {e}")
+                    logger.warning(f"[{self.network}:{self.current_nick}] Error writing to socket: {e}")
                     break
 
     async def _recv_loop(self, reader: asyncio.StreamReader):
@@ -383,7 +517,7 @@ class StandaloneRunner:
         while self._running:
             line_bytes = await reader.readline()
             if not line_bytes:
-                logger.warning("Connection closed by remote server.")
+                logger.warning(f"[{self.network}:{self.current_nick}] Connection closed by remote server.")
                 break
             self._last_data_time = time.time()
             raw_line = line_bytes.decode("utf-8", errors="ignore").strip("\r\n")
@@ -403,7 +537,7 @@ class StandaloneRunner:
                     self.current_nick = f"{self.current_nick}_"
                     self.bot.nick = self.current_nick
                     self._reclaim_needed = True
-                    logger.warning(f"Nickname collision: retrying registration as {self.current_nick}...")
+                    logger.warning(f"[{self.network}:{self.current_nick}] Nickname collision: retrying registration as {self.current_nick}...")
                     await self._send_queue.put(f"NICK {self.current_nick}")
                     continue
 
@@ -413,7 +547,7 @@ class StandaloneRunner:
                     sender_nick = prefix.split("!")[0]
                     if sender_nick.lower() == self.current_nick.lower():
                         new_nick = parts[2].lstrip(":") if len(parts) > 2 else parts[-1].lstrip(":")
-                        logger.info(f"Nickname changed from {self.current_nick} to {new_nick}")
+                        logger.info(f"[{self.network}:{self.current_nick}] Nickname changed from {self.current_nick} to {new_nick}")
                         self.current_nick = new_nick
                         self.bot.nick = new_nick
                         if new_nick.lower() == self.initial_nick.lower():
@@ -423,10 +557,11 @@ class StandaloneRunner:
                 # Registered on 001, 376, 422
                 if cmd in ("001", "376", "422") and not registered:
                     registered = True
-                    logger.info(f"Registered with {self.network} as {self.current_nick}!")
+                    self.status_str = "CONNECTED"
+                    logger.info(f"[{self.network}:{self.current_nick}] Registered with {self.network} as {self.current_nick}!")
 
                     if self._reclaim_needed and self.nickserv_password:
-                        logger.info(f"Reclaiming primary nickname {self.initial_nick} via NickServ GHOST...")
+                        logger.info(f"[{self.network}:{self.current_nick}] Reclaiming primary nickname {self.initial_nick} via NickServ GHOST...")
                         await self._send_queue.put(f"PRIVMSG NickServ :GHOST {self.initial_nick} {self.nickserv_password}")
                         await asyncio.sleep(1.5)
                         await self._send_queue.put(f"NICK {self.initial_nick}")
@@ -434,12 +569,12 @@ class StandaloneRunner:
                         await self._send_queue.put(f"PRIVMSG NickServ :IDENTIFY {self.nickserv_password}")
                         await asyncio.sleep(1.0)
                     elif self.nickserv_password:
-                        logger.info("Authenticating with NickServ...")
+                        logger.info(f"[{self.network}:{self.current_nick}] Authenticating with NickServ...")
                         await self._send_queue.put(f"PRIVMSG NickServ :IDENTIFY {self.nickserv_password}")
                         await asyncio.sleep(1.0)
 
                     for chan in self.channels:
-                        logger.info(f"Joining {chan}...")
+                        logger.info(f"[{self.network}:{self.current_nick}] Joining {chan}...")
                         await self._send_queue.put(f"JOIN {chan}")
 
                 # Incoming PRIVMSG
@@ -461,40 +596,182 @@ class StandaloneRunner:
                     if self._is_admin(sender_nick):
                         reply_target = sender_nick if not target.startswith("#") else target
 
-                        if cmd_name == "!join" and len(parts_msg) > 1:
-                            chan_to_join = parts_msg[1]
+                        # 1. !server / !servers
+                        if cmd_name in ("!server", "!servers"):
+                            subcmd = parts_msg[1].lower() if len(parts_msg) > 1 else "list"
+                            if subcmd == "list":
+                                if self.server_manager:
+                                    lines = []
+                                    for net_k, r in self.server_manager.runners.items():
+                                        st = getattr(r, "status_str", "UNKNOWN")
+                                        ch_str = ",".join(r.channels)
+                                        lines.append(f"{net_k} ({r.host}:{r.port}) [{st}] nick={r.current_nick} chans={ch_str}")
+                                    self.bot.send_msg(reply_target, f"🌐 Networks ({len(lines)}): " + " | ".join(lines))
+                                else:
+                                    ch_str = ",".join(self.channels)
+                                    self.bot.send_msg(reply_target, f"🌐 Network: {self.network} ({self.host}:{self.port}) [{self.status_str}] nick={self.current_nick} chans={ch_str}")
+                                continue
+
+                            elif subcmd == "add":
+                                # !server add <net_name> <host[:port]> [ssl|plain] [#chan1,#chan2] [nick]
+                                if len(parts_msg) < 4:
+                                    self.bot.send_msg(reply_target, "Usage: !server add <net_name> <host[:port]> [ssl|plain] [#chan1,#chan2] [nick]")
+                                    continue
+                                net_name = parts_msg[2].lower()
+                                host_port = parts_msg[3]
+                                if ":" in host_port:
+                                    h_part, p_part = host_port.split(":", 1)
+                                    try:
+                                        p_val = int(p_part)
+                                    except ValueError:
+                                        p_val = None
+                                else:
+                                    h_part = host_port
+                                    p_val = None
+
+                                ssl_mode = "ssl"
+                                if len(parts_msg) > 4:
+                                    opt = parts_msg[4].lower()
+                                    if opt in ("plain", "plaintext", "no", "false"):
+                                        ssl_mode = "plain"
+                                    elif opt in ("ssl", "tls", "yes", "true"):
+                                        ssl_mode = "ssl"
+                                use_ssl_val = (ssl_mode == "ssl")
+                                if p_val is None:
+                                    p_val = 6697 if use_ssl_val else 6667
+
+                                raw_chans = parts_msg[5] if len(parts_msg) > 5 else "#minibot"
+                                chans_val = [c if c.startswith("#") else f"#{c}" for c in raw_chans.split(",") if c]
+                                if not chans_val:
+                                    chans_val = ["#minibot"]
+
+                                nick_val = parts_msg[6] if len(parts_msg) > 6 else self.initial_nick
+                                is_trusted = is_private_or_loopback_host(h_part)
+                                srv_entry = {
+                                    "host": h_part,
+                                    "port": p_val,
+                                    "nick": nick_val,
+                                    "channels": chans_val,
+                                    "ssl": use_ssl_val,
+                                    "trusted": is_trusted,
+                                    "tls_verify": True,
+                                    "nickserv_password": ""
+                                }
+                                ok = persist_server_change(self.config_path, net_name, srv_entry, "add")
+                                if not ok:
+                                    self.bot.send_msg(reply_target, f"❌ Failed to persist server '{net_name}' to config.json.")
+                                    continue
+
+                                if self.server_manager:
+                                    await self.server_manager.add_and_start_server(net_name, srv_entry)
+                                    self.bot.send_msg(reply_target, f"✅ Added and connected to '{net_name}' ({h_part}:{p_val}, ssl={use_ssl_val}, chans={','.join(chans_val)})")
+                                else:
+                                    self.bot.send_msg(reply_target, f"✅ Persisted server '{net_name}' ({h_part}:{p_val}). Restart required for single-server mode.")
+                                continue
+
+                            elif subcmd in ("del", "remove"):
+                                if len(parts_msg) < 3:
+                                    self.bot.send_msg(reply_target, "Usage: !server del <net_name>")
+                                    continue
+                                net_name = parts_msg[2].lower()
+                                persist_server_change(self.config_path, net_name, None, "remove")
+                                if self.server_manager:
+                                    await self.server_manager.stop_and_remove_server(net_name)
+                                    self.bot.send_msg(reply_target, f"✅ Stopped and removed server '{net_name}'.")
+                                else:
+                                    self.bot.send_msg(reply_target, f"✅ Removed server '{net_name}' from config.")
+                                continue
+
+                        # 2. !join
+                        elif cmd_name == "!join" and len(parts_msg) > 1:
+                            arg1 = parts_msg[1]
+                            if len(parts_msg) > 2 or (not arg1.startswith("#") and self.server_manager and arg1.lower() in self.server_manager.runners):
+                                target_net = arg1.lower()
+                                chan_to_join = parts_msg[2]
+                            else:
+                                target_net = self.network
+                                chan_to_join = arg1
+
                             if not chan_to_join.startswith("#"):
                                 chan_to_join = f"#{chan_to_join}"
-                            await self._send_queue.put(f"JOIN {chan_to_join}")
-                            if chan_to_join not in self.channels:
-                                self.channels.append(chan_to_join)
-                            self.bot.channels = self.channels
-                            persist_channel_change(self.config_path, self.network, chan_to_join, "add")
-                            self.bot.send_msg(reply_target, f"✅ Joined and persisted {chan_to_join}")
+
+                            if target_net == self.network:
+                                await self._send_queue.put(f"JOIN {chan_to_join}")
+                                if chan_to_join not in self.channels:
+                                    self.channels.append(chan_to_join)
+                                self.bot.channels = self.channels
+                                persist_channel_change(self.config_path, self.network, chan_to_join, "add")
+                                self.bot.send_msg(reply_target, f"✅ Joined and persisted {chan_to_join}")
+                            elif self.server_manager and target_net in self.server_manager.runners:
+                                r = self.server_manager.runners[target_net]
+                                await r._send_queue.put(f"JOIN {chan_to_join}")
+                                if chan_to_join not in r.channels:
+                                    r.channels.append(chan_to_join)
+                                r.bot.channels = r.channels
+                                persist_channel_change(self.config_path, target_net, chan_to_join, "add")
+                                self.bot.send_msg(reply_target, f"✅ Joined and persisted {chan_to_join} on {target_net}")
+                            else:
+                                self.bot.send_msg(reply_target, f"❌ Network '{target_net}' is not active or recognized.")
                             continue
 
+                        # 3. !part
                         elif cmd_name == "!part":
-                            chan_to_part = parts_msg[1] if len(parts_msg) > 1 else (target if target.startswith("#") else "")
-                            if chan_to_part:
-                                if not chan_to_part.startswith("#"):
-                                    chan_to_part = f"#{chan_to_part}"
+                            target_net = self.network
+                            chan_to_part = ""
+                            if len(parts_msg) >= 3:
+                                target_net = parts_msg[1].lower()
+                                chan_to_part = parts_msg[2]
+                            elif len(parts_msg) == 2:
+                                arg1 = parts_msg[1]
+                                if not arg1.startswith("#") and self.server_manager and arg1.lower() in self.server_manager.runners:
+                                    target_net = arg1.lower()
+                                    chan_to_part = ""
+                                else:
+                                    chan_to_part = arg1
+                            else:
+                                chan_to_part = target if target.startswith("#") else ""
+
+                            if chan_to_part and not chan_to_part.startswith("#"):
+                                chan_to_part = f"#{chan_to_part}"
+
+                            if not chan_to_part:
+                                self.bot.send_msg(reply_target, "Usage: !part [#channel] or !part <network> <#channel>")
+                                continue
+
+                            if target_net == self.network:
                                 await self._send_queue.put(f"PART {chan_to_part} :Parted by admin")
                                 self.channels = [c for c in self.channels if c.lower() != chan_to_part.lower()]
                                 self.bot.channels = self.channels
                                 persist_channel_change(self.config_path, self.network, chan_to_part, "remove")
                                 self.bot.send_msg(reply_target, f"✅ Parted and removed {chan_to_part}")
-                                continue
-
-                        elif clean_msg.lower() in ("!reload", "!minibot reload"):
-                            if hasattr(self.cfg_mgr, "reload"):
-                                self.cfg_mgr.reload()
+                            elif self.server_manager and target_net in self.server_manager.runners:
+                                r = self.server_manager.runners[target_net]
+                                await r._send_queue.put(f"PART {chan_to_part} :Parted by admin")
+                                r.channels = [c for c in r.channels if c.lower() != chan_to_part.lower()]
+                                r.bot.channels = r.channels
+                                persist_channel_change(self.config_path, target_net, chan_to_part, "remove")
+                                self.bot.send_msg(reply_target, f"✅ Parted and removed {chan_to_part} from {target_net}")
                             else:
-                                self.cfg_mgr = ConfigManager(self.config_path) if self.config_path else ConfigManager()
-                            self.bot.config = self.cfg_mgr
-                            self._reload_modules()
-                            self.bot.send_msg(reply_target, f"✅ [Hot-Reload] Reloaded configuration and {len(self._attached_adapters)} sideload plugins.")
+                                self.bot.send_msg(reply_target, f"❌ Network '{target_net}' is not active or recognized.")
                             continue
 
+                        # 4. !reload
+                        elif clean_msg.lower() in ("!reload", "!minibot reload"):
+                            if self.server_manager:
+                                self.server_manager.reload_all()
+                                count = len(self._attached_adapters)
+                                self.bot.send_msg(reply_target, f"✅ [Hot-Reload] Reloaded configuration and {count} sideload plugins across all networks.")
+                            else:
+                                if hasattr(self.cfg_mgr, "reload"):
+                                    self.cfg_mgr.reload()
+                                else:
+                                    self.cfg_mgr = ConfigManager(self.config_path) if self.config_path else ConfigManager()
+                                self.bot.config = self.cfg_mgr
+                                self._reload_modules()
+                                self.bot.send_msg(reply_target, f"✅ [Hot-Reload] Reloaded configuration and {len(self._attached_adapters)} sideload plugins.")
+                            continue
+
+                        # 5. !botstatus
                         elif cmd_name == "!botstatus":
                             uptime_sec = int(time.time() - self._start_time)
                             hrs, rem = divmod(uptime_sec, 3600)
@@ -504,7 +781,12 @@ class StandaloneRunner:
                             ssl_mode = "SSL (Verified)" if (self.use_ssl and self.tls_verify) else ("SSL (Insecure)" if self.use_ssl else "Plaintext")
                             chans_str = ", ".join(self.channels)
                             mods_count = len(self._attached_adapters)
-                            status_reply = f"🤖 [Status] Uptime: {uptime_str} | Python: {py_ver} | TLS: {ssl_mode} | Channels: {chans_str} | Plugins: {mods_count}"
+                            if self.server_manager:
+                                net_names = list(self.server_manager.runners.keys())
+                                net_str = f"Networks: {len(net_names)} ({', '.join(net_names)}) | "
+                            else:
+                                net_str = f"Network: {self.network} | "
+                            status_reply = f"🤖 [Status] Uptime: {uptime_str} | {net_str}Python: {py_ver} | TLS: {ssl_mode} | Channels: {chans_str} | Plugins: {mods_count}"
                             self.bot.send_msg(reply_target, status_reply)
                             continue
 
@@ -517,7 +799,7 @@ class StandaloneRunner:
             await asyncio.sleep(15.0)
             idle_sec = time.time() - self._last_data_time
             if idle_sec > 180.0:
-                logger.warning(f"Socket inactive for {idle_sec:.0f}s (exceeded 180s threshold). Forcing reconnect...")
+                logger.warning(f"[{self.network}:{self.current_nick}] Socket inactive for {idle_sec:.0f}s (exceeded 180s threshold). Forcing reconnect...")
                 if self._writer:
                     try:
                         self._writer.close()
@@ -525,7 +807,7 @@ class StandaloneRunner:
                         pass
                 break
             elif idle_sec > 120.0:
-                logger.debug(f"Socket idle for {idle_sec:.0f}s. Sending keepalive PING...")
+                logger.debug(f"[{self.network}:{self.current_nick}] Socket idle for {idle_sec:.0f}s. Sending keepalive PING...")
                 await self._send_queue.put("PING :keepalive")
 
     async def _mtime_watcher_loop(self, interval: float = 3.0):
@@ -539,7 +821,7 @@ class StandaloneRunner:
                 for p in sideload_dir.glob("*.py"):
                     mtime = p.stat().st_mtime
                     if p.name in script_mtimes and script_mtimes[p.name] != mtime:
-                        logger.info(f"Detected modification in {p.name}. Hot-reloading...")
+                        logger.info(f"[{self.network}:{self.current_nick}] Detected modification in {p.name}. Hot-reloading...")
                         changed = True
                     script_mtimes[p.name] = mtime
                 if changed:
@@ -553,17 +835,18 @@ class StandaloneRunner:
         self.bot.nick = self.initial_nick
         self._reclaim_needed = False
         self._send_queue = asyncio.Queue()
+        self.status_str = "CONNECTING"
 
         ssl_ctx = ssl.create_default_context() if self.use_ssl else None
         if ssl_ctx and not self.tls_verify:
             ssl_ctx.check_hostname = False
             ssl_ctx.verify_mode = ssl.CERT_NONE
 
-        logger.info(f"Connecting to {self.host}:{self.port} (SSL: {self.use_ssl})...")
+        logger.info(f"[{self.network}:{self.current_nick}] Connecting to {self.host}:{self.port} (SSL: {self.use_ssl})...")
         reader, writer = await asyncio.open_connection(self.host, self.port, ssl=ssl_ctx)
         self._writer = writer
         self._last_data_time = time.time()
-        logger.info(f"Connected to {self.host}! Registering as {self.current_nick}...")
+        logger.info(f"[{self.network}:{self.current_nick}] Connected to {self.host}! Registering as {self.current_nick}...")
 
         # Handshake
         await self._send_queue.put(f"NICK {self.current_nick}")
@@ -590,7 +873,9 @@ class StandaloneRunner:
                 self._writer = None
 
     async def run(self):
-        watcher_task = asyncio.create_task(self._mtime_watcher_loop())
+        watcher_task = None
+        if self.server_manager is None:
+            watcher_task = asyncio.create_task(self._mtime_watcher_loop())
         backoff = 1.0
 
         try:
@@ -603,18 +888,187 @@ class StandaloneRunner:
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    logger.error(f"Connection session error: {e}")
+                    logger.error(f"[{self.network}:{self.current_nick}] Connection session error: {e}")
 
                 if not self._running:
                     break
 
+                self.status_str = "RECONNECTING"
                 jitter = random.uniform(0.7, 1.3)
                 sleep_time = min(60.0, backoff * jitter)
-                logger.info(f"Reconnecting in {sleep_time:.1f}s (backoff={backoff:.1f}s)...")
+                logger.info(f"[{self.network}:{self.current_nick}] Reconnecting in {sleep_time:.1f}s (backoff={backoff:.1f}s)...")
                 await asyncio.sleep(sleep_time)
                 backoff = min(60.0, backoff * 2.0)
         finally:
-            watcher_task.cancel()
+            self.status_str = "STOPPED"
+            if watcher_task and not watcher_task.cancelled():
+                watcher_task.cancel()
+
+
+class MultiServerManager:
+    """Manages concurrent StandaloneRunner instances multiplexed across multiple IRC networks."""
+
+    def __init__(
+        self,
+        config_path: Optional[str] = None,
+        modules: Optional[List[str]] = None,
+        default_nick: Optional[str] = None,
+        default_channels: Optional[Union[str, List[str]]] = None,
+    ):
+        self.config_path = config_path
+        self.modules = list(modules) if modules else list(DEFAULT_MODULES)
+        self.default_nick = default_nick
+        self.default_channels = default_channels
+        self.cfg_mgr = ConfigManager(config_path) if config_path else ConfigManager()
+        self.sideload_engine = SideloadEngine()
+        self.runners: Dict[str, StandaloneRunner] = {}
+        self.tasks: Dict[str, asyncio.Task] = {}
+        self._running = True
+        self._mtime_task: Optional[asyncio.Task] = None
+
+    def reload_all(self) -> None:
+        """Hot-reloads sideload plugins across all connected IRC networks simultaneously."""
+        logger.info("Hot-reloading modules across all active network runners...")
+        self.sideload_engine.loaded_modules.clear()
+        if hasattr(self.cfg_mgr, "reload"):
+            self.cfg_mgr.reload()
+        else:
+            self.cfg_mgr = ConfigManager(self.config_path) if self.config_path else ConfigManager()
+
+        for runner in self.runners.values():
+            runner.cfg_mgr = self.cfg_mgr
+            runner.bot.config = self.cfg_mgr
+            runner._reload_modules()
+
+    async def _mtime_watcher_loop(self, interval: float = 3.0) -> None:
+        """Watches sideload/ directory for script mtime changes and automatically reloads all runners."""
+        script_mtimes = {}
+        sideload_dir = BASE_DIR / "sideload"
+        while self._running:
+            await asyncio.sleep(interval)
+            try:
+                changed = False
+                for p in sideload_dir.glob("*.py"):
+                    mtime = p.stat().st_mtime
+                    if p.name in script_mtimes and script_mtimes[p.name] != mtime:
+                        logger.info(f"Detected modification in {p.name}. Hot-reloading all networks...")
+                        changed = True
+                    script_mtimes[p.name] = mtime
+                if changed:
+                    self.reload_all()
+            except Exception as e:
+                logger.debug(f"Error in shared mtime watcher: {e}")
+
+    def create_runner(self, net_name: str, srv_data: Optional[Dict[str, Any]] = None) -> StandaloneRunner:
+        if srv_data is None:
+            srv_data = self.cfg_mgr.servers.get(net_name, {})
+
+        nick = self.default_nick or srv_data.get("nick") or os.environ.get("IRC_NICK") or "minibot"
+        channels = self.default_channels or srv_data.get("channels") or ["#minibot"]
+        host = srv_data.get("host", "127.0.0.1")
+        default_ssl = srv_data.get("ssl", False)
+        default_port = 6697 if default_ssl else 6667
+        port = srv_data.get("port", default_port)
+        use_ssl = default_ssl
+        tls_verify = srv_data.get("tls_verify", True)
+        nickserv_password = srv_data.get("nickserv_password")
+
+        runner = StandaloneRunner(
+            nick=nick,
+            network=net_name,
+            channels=channels,
+            modules=self.modules,
+            host=host,
+            port=port,
+            use_ssl=use_ssl,
+            tls_verify=tls_verify,
+            nickserv_password=nickserv_password,
+            config_path=self.config_path,
+            sideload_engine=self.sideload_engine,
+            server_manager=self,
+        )
+        return runner
+
+    async def add_and_start_server(self, net_name: str, srv_data: Dict[str, Any]) -> StandaloneRunner:
+        """Dynamically adds and connects a new network runner to the active event loop."""
+        if net_name in self.runners:
+            await self.stop_and_remove_server(net_name)
+
+        runner = self.create_runner(net_name, srv_data)
+        self.runners[net_name] = runner
+        task = asyncio.create_task(runner.run())
+        self.tasks[net_name] = task
+        logger.info(f"Dynamically started runner for network '{net_name}'")
+        return runner
+
+    async def stop_and_remove_server(self, net_name: str) -> bool:
+        """Gracefully disconnects and removes a running network runner."""
+        runner = self.runners.pop(net_name, None)
+        task = self.tasks.pop(net_name, None)
+        if runner:
+            runner.stop()
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        return runner is not None
+
+    async def run(self, networks: Optional[List[str]] = None) -> None:
+        """Spawns StandaloneRunner tasks for all specified (or configured) networks and runs until stopped."""
+        if hasattr(self.cfg_mgr, "reload"):
+            self.cfg_mgr.reload()
+        else:
+            self.cfg_mgr = ConfigManager(self.config_path) if self.config_path else ConfigManager()
+
+        if not networks:
+            target_nets = [k for k, v in self.cfg_mgr.servers.items() if v.get("enabled", True) is not False]
+            if not target_nets:
+                target_nets = [self.cfg_mgr.primary_network or "primary"]
+        else:
+            target_nets = networks
+
+        for net in target_nets:
+            srv_data = self.cfg_mgr.servers.get(net, {})
+            runner = self.create_runner(net, srv_data)
+            self.runners[net] = runner
+            self.tasks[net] = asyncio.create_task(runner.run())
+
+        self._mtime_task = asyncio.create_task(self._mtime_watcher_loop())
+
+        try:
+            while self._running:
+                if not self.tasks:
+                    await asyncio.sleep(0.5)
+                    continue
+                done, _ = await asyncio.wait(
+                    list(self.tasks.values()),
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                for d in done:
+                    for net_k, t in list(self.tasks.items()):
+                        if t == d:
+                            del self.tasks[net_k]
+                            if not d.cancelled():
+                                exc = d.exception()
+                                if exc:
+                                    logger.error(f"Runner task for network '{net_k}' exited with error: {exc}")
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self.stop()
+            if self._mtime_task and not self._mtime_task.cancelled():
+                self._mtime_task.cancel()
+
+    def stop(self) -> None:
+        """Stops all running runners and background watchers."""
+        self._running = False
+        for runner in list(self.runners.values()):
+            runner.stop()
+        for task in list(self.tasks.values()):
+            if not task.cancelled():
+                task.cancel()
 
 
 def parse_cli_args(argv=None):
@@ -661,7 +1115,8 @@ def main():
         cfg_arg = args.import_sopel if args.import_sopel != "" else None
         try:
             res = import_sopel_config(sopel_cfg_path=cfg_arg)
-            print(f"✅ Successfully imported Sopel configuration from '{res['file']}' into config.json.")
+            file_count = len(res.get("files", [res.get("file")]))
+            print(f"✅ Successfully imported Sopel configuration ({file_count} file(s)) into config.json.")
             if res.get("copied_plugins"):
                 print(f"📦 Copied {len(res['copied_plugins'])} plugins to sideload/: {', '.join(res['copied_plugins'])}")
             else:
@@ -733,16 +1188,6 @@ def main():
     config_path = getattr(args, "config", None) if args else None
     cfg = ConfigManager(config_path) if config_path else ConfigManager()
 
-    # Fallback to config.json or sensible defaults
-    network = network or cfg.primary_network or "local"
-    srv = cfg.servers.get(network, {})
-
-    nick = nick or srv.get("nick") or os.environ.get("IRC_NICK") or "minibot"
-
-    if not channel:
-        cfg_chans = srv.get("channels") or cfg.admin_channels
-        channel = ",".join(cfg_chans) if cfg_chans else "#minibot"
-
     if not raw_modules:
         modules = list(DEFAULT_MODULES)
     else:
@@ -753,43 +1198,93 @@ def main():
     use_ssl = getattr(args, "ssl", None) if args else None
     tls_verify = False if (args and getattr(args, "insecure", False)) else None
 
-    # Set up event loop before StandaloneRunner instantiation for Python 3.7-3.9 compatibility
+    # Set up event loop before runner instantiation for Python 3.7-3.9 compatibility
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    runner = StandaloneRunner(
-        nick=nick,
-        network=network,
-        channels=channel,
-        modules=modules,
-        host=host,
-        port=port,
-        use_ssl=use_ssl,
-        tls_verify=tls_verify,
-        config_path=config_path,
-    )
+    if host is not None:
+        network = network or cfg.primary_network or "local"
+        srv = cfg.servers.get(network, {})
+        nick = nick or srv.get("nick") or os.environ.get("IRC_NICK") or "minibot"
+        if not channel:
+            cfg_chans = srv.get("channels") or cfg.admin_channels
+            channel = ",".join(cfg_chans) if cfg_chans else "#minibot"
 
-    def _sig_handler():
-        logger.info("Received termination signal, shutting down...")
-        runner._running = False
-        for t in asyncio.all_tasks(loop):
-            t.cancel()
+        runner = StandaloneRunner(
+            nick=nick,
+            network=network,
+            channels=channel,
+            modules=modules,
+            host=host,
+            port=port,
+            use_ssl=use_ssl,
+            tls_verify=tls_verify,
+            config_path=config_path,
+        )
 
-    def _sighup_handler():
-        logger.info("Received SIGHUP, reloading all sideload plugins live...")
-        runner._reload_modules()
+        def _sig_handler():
+            logger.info("Received termination signal, shutting down...")
+            runner.stop()
+            for t in asyncio.all_tasks(loop):
+                t.cancel()
 
-    for s in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(s, _sig_handler)
+        def _sighup_handler():
+            logger.info("Received SIGHUP, reloading all sideload plugins live...")
+            runner._reload_modules()
 
-    if hasattr(signal, "SIGHUP"):
-        loop.add_signal_handler(signal.SIGHUP, _sighup_handler)
+        for s in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(s, _sig_handler)
 
-    try:
-        loop.run_until_complete(runner.run())
-    finally:
-        loop.close()
+        if hasattr(signal, "SIGHUP"):
+            loop.add_signal_handler(signal.SIGHUP, _sighup_handler)
+
+        try:
+            loop.run_until_complete(runner.run())
+        finally:
+            loop.close()
+    else:
+        if network:
+            if network.strip().lower() == "all":
+                target_networks = [k for k, v in cfg.servers.items() if v.get("enabled", True) is not False]
+            else:
+                target_networks = [n.strip().lower() for n in network.split(",") if n.strip()]
+        else:
+            target_networks = [k for k, v in cfg.servers.items() if v.get("enabled", True) is not False]
+            if not target_networks:
+                target_networks = [cfg.primary_network or "primary"]
+
+        cli_nick = nick if (args and (args.opt_nick or args.pos_nick)) else None
+        cli_channel = channel if (args and (args.opt_channel or args.pos_channel)) else None
+
+        manager = MultiServerManager(
+            config_path=config_path,
+            modules=modules,
+            default_nick=cli_nick,
+            default_channels=cli_channel,
+        )
+
+        def _sig_handler():
+            logger.info("Received termination signal, shutting down...")
+            manager.stop()
+            for t in asyncio.all_tasks(loop):
+                t.cancel()
+
+        def _sighup_handler():
+            logger.info("Received SIGHUP, reloading all sideload plugins live...")
+            manager.reload_all()
+
+        for s in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(s, _sig_handler)
+
+        if hasattr(signal, "SIGHUP"):
+            loop.add_signal_handler(signal.SIGHUP, _sighup_handler)
+
+        try:
+            loop.run_until_complete(manager.run(target_networks))
+        finally:
+            loop.close()
 
 
 if __name__ == "__main__":
     main()
+

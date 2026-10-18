@@ -44,8 +44,13 @@ echo "[+] Initialized data/ and sideload/ directories."
 # 3. Interactive or automated config generation
 CONFIG_FILE="$SCRIPT_DIR/config.json"
 SOPEL_FOUND=""
-for cand in "$HOME/.sopel/default.cfg" "$HOME/.config/sopel/default.cfg"; do
-    if [[ -f "$cand" ]]; then
+for cand in "$HOME/.sopel" "$HOME/.config/sopel" "$HOME/.sopel/default.cfg" "$HOME/.config/sopel/default.cfg"; do
+    if [[ -d "$cand" ]]; then
+        if compgen -G "$cand/*.cfg" > /dev/null; then
+            SOPEL_FOUND="$cand"
+            break
+        fi
+    elif [[ -f "$cand" ]]; then
         SOPEL_FOUND="$cand"
         break
     fi
@@ -70,92 +75,162 @@ else
     echo
     echo "── Configuration Setup ──"
     
-    DEFAULT_HOST="irc.libera.chat"
-    DEFAULT_PORT="6697"
-    DEFAULT_SSL="true"
-    DEFAULT_NICK="minibot"
-    DEFAULT_CHANS="#minibot"
-    DEFAULT_ADMIN="admin"
+    SERVERS_JSON=""
+    ADMIN_NETWORKS_JSON=""
+    ALL_CHANNELS_JSON=""
+    PRIMARY_NET=""
+    ADMIN_NICK="admin"
+    BOT_NICK="minibot"
 
-    if [[ -t 0 && "${CI:-false}" != "true" ]]; then
-        read -r -p "IRC Server Host [$DEFAULT_HOST]: " INPUT_HOST
-        SERVER_HOST="${INPUT_HOST:-$DEFAULT_HOST}"
-
-        read -r -p "IRC Port [$DEFAULT_PORT]: " INPUT_PORT
-        SERVER_PORT="${INPUT_PORT:-$DEFAULT_PORT}"
-
-        read -r -p "Use SSL/TLS (true/false) [$DEFAULT_SSL]: " INPUT_SSL
-        SERVER_SSL="${INPUT_SSL:-$DEFAULT_SSL}"
-
-        read -r -p "Bot Nickname [$DEFAULT_NICK]: " INPUT_NICK
-        BOT_NICK="${INPUT_NICK:-$DEFAULT_NICK}"
-
-        read -r -p "Channels to join (comma-separated) [$DEFAULT_CHANS]: " INPUT_CHANS
-        CHANNELS_STR="${INPUT_CHANS:-$DEFAULT_CHANS}"
-
-        read -r -p "Admin IRC Nickname [$DEFAULT_ADMIN]: " INPUT_ADMIN
-        ADMIN_NICK="${INPUT_ADMIN:-$DEFAULT_ADMIN}"
-
-        read -r -p "Optional NickServ Password (leave empty if none): " INPUT_PASS
-        NICKSERV_PASS="${INPUT_PASS:-}"
-    else
-        echo "[*] Non-interactive / default configuration mode..."
-        SERVER_HOST="$DEFAULT_HOST"
-        SERVER_PORT="$DEFAULT_PORT"
-        SERVER_SSL="$DEFAULT_SSL"
-        BOT_NICK="$DEFAULT_NICK"
-        CHANNELS_STR="$DEFAULT_CHANS"
-        ADMIN_NICK="$DEFAULT_ADMIN"
-        NICKSERV_PASS=""
-    fi
-
-    # Format channels into JSON array
-    IFS=',' read -r -a CHAN_ARR <<< "$CHANNELS_STR"
-    CHAN_JSON=""
-    for c in "${CHAN_ARR[@]}"; do
-        clean_c=$(echo "$c" | tr -d '[:space:]')
-        if [[ ! "$clean_c" =~ ^# ]]; then
-            clean_c="#$clean_c"
+    FIRST_ITER=1
+    while true; do
+        if [[ "$FIRST_ITER" -eq 1 ]]; then
+            DEFAULT_NET="libera"
+            DEFAULT_HOST="irc.libera.chat"
+            DEFAULT_PORT="6697"
+            DEFAULT_SSL="true"
+            DEFAULT_NICK="minibot"
+            DEFAULT_CHANS="#minibot"
+            DEFAULT_ADMIN="admin"
+        else
+            echo
+            echo "── Add Additional IRC Network ──"
+            DEFAULT_NET="oftc"
+            DEFAULT_HOST="irc.oftc.net"
+            DEFAULT_PORT="6697"
+            DEFAULT_SSL="true"
+            DEFAULT_NICK="$BOT_NICK"
+            DEFAULT_CHANS="#minibot"
+            DEFAULT_ADMIN="$ADMIN_NICK"
         fi
-        if [[ -n "$clean_c" && "$clean_c" != "#" ]]; then
-            if [[ -n "$CHAN_JSON" ]]; then
-                CHAN_JSON="$CHAN_JSON, \"$clean_c\""
+
+        if [[ -t 0 && "${CI:-false}" != "true" ]]; then
+            read -r -p "Network Name [$DEFAULT_NET]: " INPUT_NET
+            NET_NAME="${INPUT_NET:-$DEFAULT_NET}"
+            NET_NAME="$(echo "$NET_NAME" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+
+            read -r -p "IRC Server Host [$DEFAULT_HOST]: " INPUT_HOST
+            SERVER_HOST="${INPUT_HOST:-$DEFAULT_HOST}"
+
+            read -r -p "IRC Port [$DEFAULT_PORT]: " INPUT_PORT
+            SERVER_PORT="${INPUT_PORT:-$DEFAULT_PORT}"
+
+            read -r -p "Use SSL/TLS (true/false) [$DEFAULT_SSL]: " INPUT_SSL
+            SERVER_SSL="${INPUT_SSL:-$DEFAULT_SSL}"
+
+            read -r -p "Bot Nickname [$DEFAULT_NICK]: " INPUT_NICK
+            BOT_NICK="${INPUT_NICK:-$DEFAULT_NICK}"
+
+            read -r -p "Channels to join (comma-separated) [$DEFAULT_CHANS]: " INPUT_CHANS
+            CHANNELS_STR="${INPUT_CHANS:-$DEFAULT_CHANS}"
+
+            if [[ "$FIRST_ITER" -eq 1 ]]; then
+                read -r -p "Admin IRC Nickname [$DEFAULT_ADMIN]: " INPUT_ADMIN
+                ADMIN_NICK="${INPUT_ADMIN:-$DEFAULT_ADMIN}"
+            fi
+
+            read -r -p "Optional NickServ Password (leave empty if none): " INPUT_PASS
+            NICKSERV_PASS="${INPUT_PASS:-}"
+        else
+            echo "[*] Non-interactive / default configuration mode..."
+            NET_NAME="primary"
+            SERVER_HOST="$DEFAULT_HOST"
+            SERVER_PORT="$DEFAULT_PORT"
+            SERVER_SSL="$DEFAULT_SSL"
+            BOT_NICK="$DEFAULT_NICK"
+            CHANNELS_STR="$DEFAULT_CHANS"
+            ADMIN_NICK="$DEFAULT_ADMIN"
+            NICKSERV_PASS=""
+        fi
+
+        # Format channels into JSON array
+        IFS=',' read -r -a CHAN_ARR <<< "$CHANNELS_STR"
+        CHAN_JSON=""
+        for c in "${CHAN_ARR[@]}"; do
+            clean_c=$(echo "$c" | tr -d '[:space:]')
+            if [[ ! "$clean_c" =~ ^# ]]; then
+                clean_c="#$clean_c"
+            fi
+            if [[ -n "$clean_c" && "$clean_c" != "#" ]]; then
+                if [[ -n "$CHAN_JSON" ]]; then
+                    CHAN_JSON="$CHAN_JSON, \"$clean_c\""
+                else
+                    CHAN_JSON="\"$clean_c\""
+                fi
+                if [[ -n "$ALL_CHANNELS_JSON" ]]; then
+                    ALL_CHANNELS_JSON="$ALL_CHANNELS_JSON, \"$clean_c\""
+                else
+                    ALL_CHANNELS_JSON="\"$clean_c\""
+                fi
+            fi
+        done
+        if [[ -z "$CHAN_JSON" ]]; then
+            CHAN_JSON="\"#minibot\""
+            if [[ -z "$ALL_CHANNELS_JSON" ]]; then
+                ALL_CHANNELS_JSON="\"#minibot\""
             else
-                CHAN_JSON="\"$clean_c\""
+                ALL_CHANNELS_JSON="$ALL_CHANNELS_JSON, \"#minibot\""
             fi
         fi
-    done
-    if [[ -z "$CHAN_JSON" ]]; then
-        CHAN_JSON="\"#minibot\""
-    fi
 
-    # Only set trusted: true for loopback or private RFC1918 networks; false for public IRC
-    IS_TRUSTED="false"
-    CLEAN_HOST="$(echo "$SERVER_HOST" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-    if [[ "$CLEAN_HOST" == "127.0.0.1" || "$CLEAN_HOST" == "localhost" || "$CLEAN_HOST" == "::1" || "$CLEAN_HOST" == 10.* || "$CLEAN_HOST" == 192.168.* || "$CLEAN_HOST" == 127.* ]]; then
-        IS_TRUSTED="true"
-    elif [[ "$CLEAN_HOST" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]]; then
-        IS_TRUSTED="true"
-    fi
+        IS_TRUSTED="false"
+        CLEAN_HOST="$(echo "$SERVER_HOST" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+        if [[ "$CLEAN_HOST" == "127.0.0.1" || "$CLEAN_HOST" == "localhost" || "$CLEAN_HOST" == "::1" || "$CLEAN_HOST" == 10.* || "$CLEAN_HOST" == 192.168.* || "$CLEAN_HOST" == 127.* ]]; then
+            IS_TRUSTED="true"
+        elif [[ "$CLEAN_HOST" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]]; then
+            IS_TRUSTED="true"
+        fi
+
+        if [[ -z "$PRIMARY_NET" ]]; then
+            PRIMARY_NET="$NET_NAME"
+        fi
+
+        if [[ -n "$ADMIN_NETWORKS_JSON" ]]; then
+            ADMIN_NETWORKS_JSON="$ADMIN_NETWORKS_JSON, \"$NET_NAME\""
+        else
+            ADMIN_NETWORKS_JSON="\"$NET_NAME\""
+        fi
+
+        SRV_BLOCK="    \"$NET_NAME\": {
+      \"host\": \"$SERVER_HOST\",
+      \"port\": $SERVER_PORT,
+      \"nick\": \"$BOT_NICK\",
+      \"channels\": [$CHAN_JSON],
+      \"ssl\": $SERVER_SSL,
+      \"trusted\": $IS_TRUSTED,
+      \"tls_verify\": true,
+      \"nickserv_password\": \"$NICKSERV_PASS\"
+    }"
+
+        if [[ -n "$SERVERS_JSON" ]]; then
+            SERVERS_JSON="$SERVERS_JSON,
+$SRV_BLOCK"
+        else
+            SERVERS_JSON="$SRV_BLOCK"
+        fi
+
+        FIRST_ITER=0
+
+        if [[ -t 0 && "${CI:-false}" != "true" ]]; then
+            read -r -p "Add another IRC server/network? [y/N]: " ADD_ANOTHER
+            ADD_ANOTHER="${ADD_ANOTHER:-n}"
+            if [[ ! "$ADD_ANOTHER" =~ ^[Yy] ]]; then
+                break
+            fi
+        else
+            break
+        fi
+    done
 
     # Generate minimal config.json
     cat > "$CONFIG_FILE" <<EOF
 {
-  "PRIMARY_NETWORK": "primary",
-  "ADMIN_NETWORKS": ["primary"],
-  "ADMIN_CHANNELS": [$CHAN_JSON],
+  "PRIMARY_NETWORK": "$PRIMARY_NET",
+  "ADMIN_NETWORKS": [$ADMIN_NETWORKS_JSON],
+  "ADMIN_CHANNELS": [$ALL_CHANNELS_JSON],
   "ADMIN_NICKS": ["$ADMIN_NICK"],
   "SERVERS": {
-    "primary": {
-      "host": "$SERVER_HOST",
-      "port": $SERVER_PORT,
-      "nick": "$BOT_NICK",
-      "channels": [$CHAN_JSON],
-      "ssl": $SERVER_SSL,
-      "trusted": $IS_TRUSTED,
-      "tls_verify": true,
-      "nickserv_password": "$NICKSERV_PASS"
-    }
+$SERVERS_JSON
   }
 }
 EOF

@@ -14,9 +14,12 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from run_bot import (
+    MultiServerManager,
     StandaloneRunner,
     import_sopel_config,
+    parse_cli_args,
     persist_channel_change,
+    persist_server_change,
 )
 
 
@@ -343,6 +346,171 @@ class TestTurnkeyLifecycle(unittest.TestCase):
         finally:
             if os.path.exists(stopped_file):
                 os.remove(stopped_file)
+
+
+    def test_import_sopel_config_multi_file_directory(self):
+        """Tests importing multiple Sopel .cfg files from a directory and merging into config.json."""
+        sopel_dir = os.path.join(self.test_dir, "sopel_configs")
+        os.makedirs(sopel_dir, exist_ok=True)
+        out_json = os.path.join(self.test_dir, "config_multi.json")
+
+        # 1. libera.cfg
+        with open(os.path.join(sopel_dir, "libera.cfg"), "w", encoding="utf-8") as f:
+            f.write(
+                "[core]\n"
+                "host = irc.libera.chat\n"
+                "port = 6697\n"
+                "use_ssl = true\n"
+                "nick = LiberaBot\n"
+                "owner = LiberaAdmin\n"
+                "channels = #libera1, #libera2\n"
+            )
+
+        # 2. oftc.cfg
+        with open(os.path.join(sopel_dir, "oftc.cfg"), "w", encoding="utf-8") as f:
+            f.write(
+                "[core]\n"
+                "host = irc.oftc.net\n"
+                "port = 6697\n"
+                "use_ssl = true\n"
+                "nick = OFTCBot\n"
+                "owner = OFTCAdmin\n"
+                "channels = #oftc1\n"
+            )
+
+        res = import_sopel_config(sopel_cfg_path=sopel_dir, out_config_json=out_json)
+        self.assertEqual(len(res["files"]), 2)
+
+        with open(out_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        self.assertIn("libera", data["SERVERS"])
+        self.assertIn("oftc", data["SERVERS"])
+        self.assertEqual(data["SERVERS"]["libera"]["host"], "irc.libera.chat")
+        self.assertEqual(data["SERVERS"]["oftc"]["host"], "irc.oftc.net")
+        self.assertIn("LiberaAdmin", data["ADMIN_NICKS"])
+        self.assertIn("OFTCAdmin", data["ADMIN_NICKS"])
+        self.assertIn("#libera1", data["ADMIN_CHANNELS"])
+        self.assertIn("#oftc1", data["ADMIN_CHANNELS"])
+        self.assertIn("libera", data["ADMIN_NETWORKS"])
+        self.assertIn("oftc", data["ADMIN_NETWORKS"])
+        self.assertTrue(data["PRIMARY_NETWORK"] in ("libera", "oftc"))
+
+    def test_persist_server_change_add_and_remove(self):
+        """Tests adding and removing server entries in config.json via persist_server_change."""
+        config_path = os.path.join(self.test_dir, "config_srv.json")
+        init_data = {
+            "PRIMARY_NETWORK": "primary",
+            "ADMIN_NETWORKS": ["primary"],
+            "ADMIN_CHANNELS": ["#lobby"],
+            "SERVERS": {
+                "primary": {
+                    "host": "127.0.0.1",
+                    "channels": ["#lobby"]
+                }
+            }
+        }
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(init_data, f)
+
+        # 1. Add oftc server
+        new_srv = {
+            "host": "irc.oftc.net",
+            "port": 6697,
+            "nick": "minibot",
+            "channels": ["#oftc-lobby"],
+            "ssl": True,
+            "trusted": False,
+            "tls_verify": True,
+            "nickserv_password": ""
+        }
+        ok = persist_server_change(config_path, "oftc", new_srv, "add")
+        self.assertTrue(ok)
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertIn("oftc", data["SERVERS"])
+        self.assertIn("oftc", data["ADMIN_NETWORKS"])
+        self.assertIn("#oftc-lobby", data["ADMIN_CHANNELS"])
+        self.assertEqual(data["SERVERS"]["oftc"]["host"], "irc.oftc.net")
+
+        # 2. Remove oftc server
+        ok = persist_server_change(config_path, "oftc", None, "remove")
+        self.assertTrue(ok)
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertNotIn("oftc", data["SERVERS"])
+        self.assertNotIn("oftc", data["ADMIN_NETWORKS"])
+
+    def test_multi_server_in_chat_admin_commands(self):
+        """Tests in-chat multi-server commands: !server list, !server add, !server del, and cross-network !join/!part."""
+        config_path = os.path.join(self.test_dir, "config_chat_multi.json")
+        init_data = {
+            "PRIMARY_NETWORK": "libera",
+            "ADMIN_NICKS": ["chief"],
+            "ADMIN_NETWORKS": ["libera"],
+            "ADMIN_CHANNELS": ["#libera-admin"],
+            "SERVERS": {
+                "libera": {
+                    "host": "irc.libera.chat",
+                    "port": 6697,
+                    "nick": "minibot",
+                    "channels": ["#libera-admin"],
+                    "ssl": True,
+                    "trusted": False,
+                    "tls_verify": True
+                }
+            }
+        }
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(init_data, f)
+
+        manager = MultiServerManager(config_path=config_path)
+        libera_runner = manager.create_runner("libera")
+        manager.runners["libera"] = libera_runner
+        libera_runner._send_queue = asyncio.Queue()
+
+        sent_msgs = []
+        libera_runner.bot.send_msg = lambda target, msg: sent_msgs.append((target, msg))
+
+        async def run_scenario():
+            lines = [
+                # 1. !server list
+                b":chief!u@h PRIVMSG #libera-admin :!server list\r\n",
+                # 2. !server add oftc irc.oftc.net:6697 ssl #oftc-lobby\r\n
+                b":chief!u@h PRIVMSG #libera-admin :!server add oftc irc.oftc.net:6697 ssl #oftc-lobby\r\n",
+                # 3. Cross-network !join oftc #oftc-new
+                b":chief!u@h PRIVMSG #libera-admin :!join oftc #oftc-new\r\n",
+                # 4. Cross-network !part oftc #oftc-new
+                b":chief!u@h PRIVMSG #libera-admin :!part oftc #oftc-new\r\n",
+                # 5. !server del oftc
+                b":chief!u@h PRIVMSG #libera-admin :!server del oftc\r\n",
+                # 6. !botstatus
+                b":chief!u@h PRIVMSG #libera-admin :!botstatus\r\n",
+                b""
+            ]
+            reader = AsyncMock()
+            reader.readline.side_effect = lines
+            await libera_runner._recv_loop(reader)
+
+        asyncio.run(run_scenario())
+
+        replies = [m for _, m in sent_msgs]
+        self.assertTrue(any("Networks (" in r or "Network:" in r for r in replies))
+        self.assertTrue(any("Added and connected to 'oftc'" in r for r in replies))
+        self.assertTrue(any("Joined and persisted #oftc-new on oftc" in r for r in replies))
+        self.assertTrue(any("Parted and removed #oftc-new from oftc" in r for r in replies))
+        self.assertTrue(any("Stopped and removed server 'oftc'" in r for r in replies))
+        self.assertTrue(any("Networks:" in r or "!botstatus" in r for r in replies))
+
+    def test_parse_cli_args_multi_network(self):
+        """Tests CLI multi-network argument parsing."""
+        _, _, net, _, _ = parse_cli_args(["--network", "libera,oftc", "--channel", "#ch1,#ch2"])
+        self.assertEqual(net, "libera,oftc")
+
+        _, _, net_all, _, _ = parse_cli_args(["--network", "all"])
+        self.assertEqual(net_all, "all")
 
 
 if __name__ == "__main__":

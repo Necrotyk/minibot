@@ -197,10 +197,26 @@ status_bot() {
     fi
 
     if [[ -f "$CONFIG_FILE" ]]; then
-        local host chans
-        host="$(grep -o '"host": "[^"]*' "$CONFIG_FILE" 2>/dev/null | head -n1 | cut -d'"' -f4 || echo "unknown")"
-        chans="$(grep -o '"channels": \[[^]]*\]' "$CONFIG_FILE" 2>/dev/null | head -n1 || echo "")"
-        echo "Config:      $CONFIG_FILE (Server: $host, $chans)"
+        local py_bin
+        py_bin="$(get_python_bin)"
+        local cfg_summary
+        cfg_summary="$($py_bin -c '
+import json, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        d = json.load(f)
+    srvs = d.get("SERVERS", {})
+    parts = []
+    for k, v in srvs.items():
+        h = v.get("host", "unknown")
+        p = v.get("port", "")
+        ch = ",".join(v.get("channels", []))
+        parts.append(f"{k} -> {h}:{p} [{ch}]")
+    print(" | ".join(parts) if parts else "No servers configured")
+except Exception as e:
+    print(f"Error reading config: {e}")
+' "$CONFIG_FILE" 2>/dev/null || echo "Unable to parse config")"
+        echo "Config:      $CONFIG_FILE ($cfg_summary)"
     else
         echo "Config:      Not configured yet."
     fi
